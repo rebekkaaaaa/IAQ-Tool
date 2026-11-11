@@ -1,4 +1,4 @@
-# IAQ Assessment Tool · Bachelor-Thesis P6 · V12
+# IAQ Assessment Tool · Bachelor-Thesis P6 · V13
 
 **Grundlage:** P6-Projektauftrag «Entwicklung eines standardisierten IAQ-Nachweismodells für Büro- und Verwaltungsflächen», S. 7–9, sowie die reduzierte Tabelle `P6_Mindestdatensatz_IAQ_reduziert.xlsx`.
 
@@ -15,13 +15,21 @@ Im **Hauptverzeichnis** des bestehenden GitHub-Repositories folgende Dateien hoc
 
 Die Streamlit-Startdatei bleibt `app.py`. Die übrigen Dateien `MESSSTRATEGIEN_P6.md` und `test_iaq_logic.py` sind Dokumentation/Tests und nicht für den Livebetrieb erforderlich.
 
+## Neu in V13
+
+- **Messart statt Nachweiszweck:** ein Dropdown mit den bekannten Begriffen Stichprobenmessung / Messkampagne / Langzeitmessung (Monitoring). Alte Projektdateien werden automatisch umgeschlüsselt.
+- **Gerätematrix integriert** (`devices.json`, 27 Geräte des Messgeräteprojekts): Gerät je Raum wählen; Warnung, wenn das Gerät nicht CO₂, Temperatur und Feuchte misst; Genauigkeit im Raum hinterlegt; Werte ausserhalb des Gerätemessbereichs werden beim Import ausgeschlossen.
+- **Automatischer Datenimport** (`iaq_import.py`): CSV/TXT/XLSX/JSON, Kopfzeile und Vorspann, Trennzeichen, Dezimalkomma, Datums-/Zeitformat, UTC → Lokalzeit, °F/K → °C, Vol.-% → ppm, Mittelung bei Intervallen < 1 min. Unklare Fälle (mehrdeutiges Datum, fehlende Einheit) müssen bestätigt werden. Jeder Import wird protokolliert. Details: `DATENIMPORT.md`.
+- **IAQ-Standardformat** für externe Geräte, mit Vorlage zum Herunterladen.
+- **Nutzung automatisiert:** Zeitplan, Raumkalender (.ics, inkl. Serien) oder Präsenz-/Personenzählsensor (CSV). Die Nutzungszeit steuert die 10 %-Regel.
+
 ## Pflicht für die Grundbewertung
 
 - Raum-ID/Bezeichnung
 - Bewertungsprofil (SIA, SECO/ArGV 3, Minergie-ECO 2023.1, BT)
 - Heiz- oder Kühlperiode (Betriebsfall)
 - Lüftungsart; bei Hybrid aktueller Betriebsmodus
-- Nachweiszweck und Messstrategie
+- Messart: Stichprobenmessung, Messkampagne oder Langzeitmessung (Monitoring)
 - Pro Messzeitpunkt **Datum/Uhrzeit, CO₂ [ppm], Lufttemperatur [°C], relative Feuchte [%]**
 
 Ein Messzeitpunkt ist nur vollständig, wenn alle drei Sensorwerte vorhanden, numerisch, plausibel und mit demselben Zeitstempel verknüpft sind. Doppelte Parameterwerte zum selben Zeitpunkt werden ausgeschlossen; keine stillschweigende Interpolation.

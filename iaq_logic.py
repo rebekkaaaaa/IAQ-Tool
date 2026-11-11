@@ -12,7 +12,9 @@ from typing import Any
 
 CORE = {"CO₂": "ppm", "Temperatur": "°C", "Relative Feuchte": "%"}
 CORE_ORDER = tuple(CORE)
-STRATEGIES = ["Stichproben- / Kontrollmessung", "Temporäre Messkampagne", "Kontinuierliches Monitoring"]
+STRATEGIES = ["Stichprobenmessung", "Messkampagne", "Langzeitmessung (Monitoring)"]
+# Frühere Bezeichnungen (bis V12) für den Import alter Projektdateien
+LEGACY_STRATEGIES = {"Stichproben- / Kontrollmessung": STRATEGIES[0], "Temporäre Messkampagne": STRATEGIES[1], "Kontinuierliches Monitoring": STRATEGIES[2]}
 PURPOSES = [
     "Ersteinschätzung / Kontrolle",
     "Dokumentierte IAQ-Performance im Messzeitraum",
@@ -33,7 +35,7 @@ STRATEGY_INFO = {
     STRATEGIES[2]: {
         "zweck": "Wiederkehrende Auffälligkeiten und längerfristige Entwicklungen erfassen.",
         "vorschlag": "Projektvorschlag (nicht normativ): mehrmonatige Messung, typischerweise alle 5–15 Minuten; Wartung, Datenlücken und Nutzungszeiten dokumentieren.",
-        "aussage": "Gilt für tatsächlich erfasste Zeiten und Saisons; ein Jahresnachweis erfordert geeignete Jahresabdeckung und Methode.",
+        "aussage": "Gilt für tatsächlich erfasste Zeiten und Saisons. Ab einem Jahr Normalbetrieb: Nachweis mit 10 %-Regel (SIA 382/1:2025 Ziff. 2.2.5.6; SIA 180:2014 Ziff. 3.5.1.3/3.5.1.4).",
     },
 }
 PROFILE_SIA = "SIA 382/1:2025"
@@ -169,8 +171,6 @@ def required_issues(room: dict, assessment: dict) -> list[str]:
         issues.append("Bewertungsprofil fehlt")
     if room.get("strategy") not in STRATEGIES:
         issues.append("Messstrategie fehlt")
-    if not assessment.get("purpose") or assessment.get("purpose") not in PURPOSES:
-        issues.append("Nachweiszweck fehlt")
     if not long_to_samples(room)["samples"]:
         issues.append("Kein vollständiger Messpunkt mit Zeitstempel, CO₂, Temperatur und r. F.")
     return issues
@@ -181,7 +181,7 @@ def conditional_hints(room: dict, assessment: dict, parsed: dict | None = None) 
     parsed = parsed or long_to_samples(room)
     hints = []
     strat = room.get("strategy")
-    purpose = assessment.get("purpose")
+    documented = strat in (STRATEGIES[1], STRATEGIES[2])  # Messreihe über einen Zeitraum
     if strat != STRATEGIES[0]:
         if not room.get("measurement_interval_min"):
             hints.append("Aufzeichnungsintervall für Messreihe fehlt")
@@ -189,13 +189,11 @@ def conditional_hints(room: dict, assessment: dict, parsed: dict | None = None) 
             hints.append("Geplanter Messbeginn / Messende nicht dokumentiert")
         if not str(room.get("data_gaps", "")).strip():
             hints.append("Ausfälle und Datenlücken nicht dokumentiert")
-    if purpose in (PURPOSES[1], PURPOSES[2]) or strat == STRATEGIES[2]:
+    if documented:
         if not usage_defined(room):
-            hints.append("Nutzungszeit (Wochentage + Von/Bis) nicht strukturiert erfasst: keine nutzungszeitbezogene Auswertung")
-        if not str(room.get("occupancy_log", "")).strip():
-            hints.append("Belegungs-/Nutzungsprotokoll fehlt: Repräsentativität ungeprüft")
-    if purpose == PURPOSES[2] and strat != STRATEGIES[2]:
-        hints.append("Langfristiger Nachweiszweck mit dieser Messstrategie nicht belastbar")
+            hints.append("Nutzungszeit nicht erfasst (Zeitplan, Kalender oder Präsenzsensor): keine nutzungszeitbezogene Auswertung")
+        elif room.get("occupancy_source") not in OCC_SOURCES[1:] and not str(room.get("occupancy_log", "")).strip():
+            hints.append("Nutzung nur als Zeitplan erfasst: Belegungsprotokoll, Kalender oder Präsenzsensor erhöht die Belastbarkeit")
     if strat == STRATEGIES[2] and assessment.get("period") in PERIODS:
         hints.append("Saisonübergreifende Reihen getrennt nach Betriebsfall prüfen; globales Profil gilt nur für gewählten Betriebsfall")
     if strat != STRATEGIES[0] and len(parsed["samples"]) < 2:
@@ -210,9 +208,9 @@ def conditional_hints(room: dict, assessment: dict, parsed: dict | None = None) 
     if assessment.get("basis") == PROFILE_SIA and effective_ventilation(room) in ("Mechanisch", "Hybrid – mechanischer Modus"):
         if room.get("outdoor_co2_ppm") is None:
             hints.append("Aussen-CO₂ nicht gemessen: SIA-IDA-2-Vergleich nur mit 400-ppm-Annahme")
-    if purpose in (PURPOSES[1], PURPOSES[2]) and not str(room.get("selection_reason", "")).strip():
+    if documented and not str(room.get("selection_reason", "")).strip():
         hints.append("Raumauswahlgrund fehlt: keine nachgewiesene Repräsentativität der Mehrraumauswahl")
-    if purpose in (PURPOSES[1], PURPOSES[2]) and not str(room.get("heating_system", "")).strip():
+    if documented and not str(room.get("heating_system", "")).strip():
         hints.append("Gebäudetechnische Randbedingungen unvollständig (z. B. Heizsystem / Regelung)")
     if not str(room.get("measurement_position", "")).strip():
         hints.append("Sensorposition nicht dokumentiert: Repräsentativität eingeschränkt")
@@ -246,13 +244,37 @@ def _hm(value: Any):
         return None
 
 
+OCC_SOURCES = ["Zeitplan (manuell)", "Kalender (.ics)", "Präsenzsensor (CSV)"]
+
+
+def _intervals(room: dict) -> list:
+    if room.get("occupancy_source") not in OCC_SOURCES[1:]:
+        return []
+    out = []
+    for iv in room.get("occupancy_intervals") or []:
+        try:
+            a, b = (datetime.strptime(str(x), "%Y-%m-%d %H:%M") for x in iv)
+        except (ValueError, TypeError):
+            continue
+        if b > a:
+            out.append((a, b))
+    return sorted(out)
+
+
 def usage_defined(room: dict) -> bool:
-    """Strukturierte Nutzungszeit (Wochentage + Von/Bis) ist erfasst."""
+    """Nutzungszeit erfasst: importierte Belegungsintervalle oder Zeitplan (Wochentage + Von/Bis)."""
+    if _intervals(room):
+        return True
     s, e = _hm(room.get("usage_start")), _hm(room.get("usage_end"))
     return bool(room.get("usage_days")) and s is not None and e is not None and s < e
 
 
 def usage_label(room: dict) -> str:
+    iv = _intervals(room)
+    if iv:
+        h = sum((b - a).total_seconds() for a, b in iv) / 3600
+        src = "Kalender" if room["occupancy_source"] == OCC_SOURCES[1] else "Präsenzsensor"
+        return f"{src}: {len(iv)} Belegungsintervalle, {h:.0f} h"
     if not usage_defined(room):
         return "nicht strukturiert erfasst"
     days = [d for d in WEEKDAYS if d in room["usage_days"]]
@@ -260,10 +282,21 @@ def usage_label(room: dict) -> str:
 
 
 def filter_usage(samples: list, room: dict) -> list | None:
-    """Messpunkte innerhalb der erfassten Nutzungszeit (Beginn inklusive, Ende exklusive).
+    """Messpunkte innerhalb der Nutzungszeit (Beginn inklusive, Ende exklusive).
 
-    None, wenn keine strukturierte Nutzungszeit erfasst ist. Es wird nichts geschätzt.
+    Quelle: importierte Belegungsintervalle (Kalender/Präsenzsensor) oder Zeitplan.
+    None, wenn keine Nutzungszeit erfasst ist. Es wird nichts geschätzt.
     """
+    iv = _intervals(room)
+    if iv:
+        import bisect
+        starts = [a for a, _ in iv]
+        out = []
+        for x in samples:
+            i = bisect.bisect_right(starts, x["timestamp"]) - 1
+            if i >= 0 and iv[i][0] <= x["timestamp"] < iv[i][1]:
+                out.append(x)
+        return out
     if not usage_defined(room):
         return None
     s, e = _hm(room["usage_start"]), _hm(room["usage_end"])

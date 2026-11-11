@@ -1,4 +1,4 @@
-# Start: IAQ-Tool V12 testen und online stellen
+# Start: IAQ-Tool V13 testen und online stellen
 
 ## Wichtig: Die ZIP-Datei selbst nicht hochladen
 
@@ -10,7 +10,8 @@ Die Dateien müssen entpackt im **Hauptordner** des Repositories liegen.
 1. ZIP auf dem Computer entpacken.
 2. Im bestehenden GitHub-Repository: **Add file → Upload files**, alle entpackten Dateien hineinziehen
    (bestehende Dateien werden ersetzt), unten **Commit changes**.
-   Benötigt werden: `app.py`, `iaq_logic.py`, `iaq_report.py`, `demo_data.py`, `bewertungsregeln.json`, `requirements.txt`.
+   Benötigt werden: `app.py`, `iaq_logic.py`, `iaq_report.py`, `iaq_import.py`, `demo_data.py`, `bewertungsregeln.json`, `devices.json`, `import_profiles.json`, `requirements.txt`.
+   **Neu in V13:** `iaq_import.py`, `devices.json` (Gerätematrix), `import_profiles.json`; `requirements.txt` ergänzt (openpyxl, tzdata) – unbedingt mit ersetzen.
 3. Bestehende App: baut sich nach dem Commit automatisch neu (1–3 Minuten).
    Neue App: share.streamlit.io → **Create app** → Repository, Branch `main`, Main file `app.py`;
    unter *Advanced settings* Python **3.12** wählen (lokal mit 3.11, 3.12 und 3.13 geprüft).
@@ -28,10 +29,11 @@ Die Dateien müssen entpackt im **Hauptordner** des Repositories liegen.
 2. Seite **5 · Nachweis & Reporting** → «Gesamtbericht erstellen» → herunterladen → im Browser öffnen → «Als PDF drucken (A4)», Hintergrundgrafiken einschalten.
 3. Für echte Projekte: **Höhenlage** unter Seite 1 · Objektangaben eintragen (nötig für die Feuchtebewertung nach SIA 180).
 
-Fachlogik prüfen: `python -m unittest -v test_iaq_logic.py` (20 Tests).
+Fachlogik prüfen: `python -m unittest -v test_iaq_logic test_iaq_import` (32 Tests).
 
-## Geprüft (11.11.2026)
+## Geprüft (11.11.2026, V13)
 
-- Alle sechs App-Seiten mit einer Streamlit-Attrappe durchlaufen; Code kompiliert mit Python 3.11, 3.12, 3.13.
+- Alle sieben App-Seiten inkl. Datei-, Kalender- und Präsenzimport mit einer Streamlit-Attrappe durchlaufen; Code kompiliert mit Python 3.11, 3.12, 3.13.
 - Berichte mit 1–66 Räumen automatisch auf Überlauf und Schriftgrösse geprüft (≥ 12 pt ausser Quellen und Seitenfuss).
-- **Nicht geprüft:** echter Streamlit-Lauf (in der Arbeitsumgebung nicht installierbar).
+- Import mit synthetischen Dateien in typischen Exportstilen getestet (CSV/TXT/XLSX/JSON, °F, UTC, Vorspann, Datum+Zeit getrennt, Sekundendaten).
+- **Nicht geprüft:** echter Streamlit-Lauf; **echte Exportdateien der Geräte** (liegen noch nicht vor).

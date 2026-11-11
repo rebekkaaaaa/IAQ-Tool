@@ -1,0 +1,8 @@
+{
+  "_hinweis": "Gerätespezifische Importprofile. Nur aus einer geprüften Original-Exportdatei des Geräts erstellen. Schlüssel = id aus devices.json. Beispiel siehe _beispiel.",
+  "_beispiel": {
+    "quelle": "Original-Export vom TT.MM.JJJJ, Datei XY.csv, geprüft durch …",
+    "columns": {"timestamp": "Spaltenname Zeit", "co2": "Spaltenname CO2", "temp": "Spaltenname Temperatur", "rh": "Spaltenname Feuchte"},
+    "units": {"co2": "ppm", "temp": "°C", "rh": "%"}
+  }
+}

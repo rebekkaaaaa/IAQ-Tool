@@ -1,4 +1,4 @@
-"""IAQ-Assessment-Tool P6 · V12 · Fokusthemen, 10 %-Regel nach SIA 180/382-1, standardisierter A4-Bericht (2–9 Seiten)."""
+"""IAQ-Assessment-Tool P6 · V13 · Messart, geräteabhängiger Datenimport, Nutzung aus Kalender/Präsenzsensor, A4-Bericht (2–9 Seiten)."""
 import html
 import io
 import json
@@ -15,21 +15,26 @@ from iaq_logic import (
     PROFILE_BT, PROFILE_ECO, PROFILE_SECO, PROFILE_SIA,
     conditional_hints, effective_ventilation, import_measurements,
     long_to_samples, measurement_records, required_issues, screening,
-    WEEKDAYS, room_status, evaluate_room, usage_defined, filter_usage, STATUS_OK, STATUS_DEV, STATUS_CHECK, STATUS_NA, STATUS_NAPP, TOPICS,
+    WEEKDAYS, OCC_SOURCES, LEGACY_STRATEGIES, usage_label, room_status, evaluate_room, usage_defined, filter_usage, STATUS_OK, STATUS_DEV, STATUS_CHECK, STATUS_NA, STATUS_NAPP, TOPICS,
 )
 from iaq_report import build_report, page_plan
+import iaq_import as imp
 from demo_data import build_demo_project
 
 st.set_page_config(page_title="IAQ-Nachweismodell | P6", page_icon="🏢", layout="wide")
 RULES = json.loads((Path(__file__).parent / "bewertungsregeln.json").read_text(encoding="utf-8"))
+DEVICES = imp.load_devices()
+DEV_BY_ID = {d["id"]: d for d in DEVICES}
+PROFILES_IMP = imp.load_profiles()
+EXTERN = "Externes / anderes Gerät (IAQ-Standardformat)"
 
 
 def new_project():
     return {
-        "schema_version": 12, "demo": False,
+        "schema_version": 13, "demo": False,
         "building": {"name": "", "object_id": "", "location": "", "owner": "", "altitude_m": "", "operating_hours": "", "notes": ""},
         "report": {"report_no": "", "version": "1.0", "author": ""},
-        "assessment": {"basis": PROFILE_BT, "period": PERIODS[0], "purpose": "", "notes": ""},
+        "assessment": {"basis": PROFILE_BT, "period": PERIODS[0], "purpose": "", "default_strategy": STRATEGIES[1], "notes": ""},
         "rooms": [], "step_notes": {},
     }
 
@@ -42,7 +47,8 @@ def new_room(number: int):
         "start_date": "", "end_date": "", "measurement_interval_min": None,
         "usage_times": "", "usage_days": [], "usage_start": "", "usage_end": "", "occupancy_log": "", "occupancy": None,
         "area_m2": None, "floor": "", "measurement_position": "", "sensor_height_m": "", "sensor_count": "", "position_check": False,
-        "device_id": "", "device_model": "", "calibration": "",
+        "device_id": "", "device_model": "", "device_ref": "", "calibration": "", "import_log": [],
+        "occupancy_source": OCC_SOURCES[0], "occupancy_intervals": [], "occupancy_import_log": {},
         "data_gaps": "", "maintenance": "", "ventilation_notes": "",
         "outdoor_co2_ppm": None, "selection_reason": "", "conditions": "",
         "strategy_deviation": "", "measurements": [], "notes": "",
@@ -62,6 +68,8 @@ def migrate(raw):
     p["assessment"]["period"] = a.get("period", PERIODS[0])
     p["assessment"]["purpose"] = a.get("purpose") if a.get("purpose") in PURPOSES else ""
     p["assessment"]["notes"] = a.get("notes", "")
+    ds = LEGACY_STRATEGIES.get(a.get("default_strategy"), a.get("default_strategy"))
+    p["assessment"]["default_strategy"] = ds if ds in STRATEGIES else STRATEGIES[1]
     p["report"].update({k: v for k, v in (raw.get("report") or {}).items() if k in p["report"]})
     p["demo"] = bool(raw.get("demo"))
     if p["assessment"]["basis"] not in PROFILES or p["assessment"]["period"] not in PERIODS:
@@ -72,8 +80,11 @@ def migrate(raw):
         r = new_room(idx)
         r.update({k: v for k, v in old.items() if k in r})
         r["id"] = str(r.get("id") or uuid4().hex[:8])
+        r["strategy"] = LEGACY_STRATEGIES.get(r.get("strategy"), r.get("strategy"))
         if r["strategy"] not in STRATEGIES:
             r["strategy"] = ""
+        if r.get("occupancy_source") not in OCC_SOURCES:
+            r["occupancy_source"] = OCC_SOURCES[0]
         if not isinstance(r.get("measurements"), list):
             r["measurements"] = []
         p["rooms"].append(r)
@@ -146,7 +157,7 @@ if p.get("demo"):
     st.warning("**Beispielprojekt mit synthetischen Daten geladen** – nur zum Testen. Berichte werden als BEISPIELDATEN gekennzeichnet. Neues Projekt: Seite 6 · Datensicherung.")
 
 with st.sidebar:
-    page = st.radio("Navigation", ["Übersicht", "1 · Nachweisrahmen", "2 · Räume & Messstrategie", "3 · Messwerte", "4 · Qualitätsprüfung", "5 · Nachweis & Reporting", "6 · Datensicherung"], label_visibility="collapsed")
+    page = st.radio("Navigation", ["Übersicht", "1 · Projekt & Bewertung", "2 · Räume & Messart", "3 · Messwerte & Nutzung", "4 · Qualitätsprüfung", "5 · Nachweis & Reporting", "6 · Datensicherung"], label_visibility="collapsed")
     st.divider()
     st.caption(f"{a.get('basis', '')} · {a.get('period', '')}")
     st.caption(f"{len(p['rooms'])} Raum/Räume")
@@ -157,8 +168,8 @@ if page == "Übersicht":
     c1.metric("Räume", len(p["rooms"]))
     c2.metric("Vollständige Messpunkte", sum(len(long_to_samples(r)["samples"]) for r in p["rooms"]))
     c3.metric("Räume mit Minimaldatensatz", sum(not required_issues(r, a) for r in p["rooms"]))
-    st.markdown("**Ablauf:** Nachweiszweck wählen → Räume und Lüftungsart erfassen → Messstrategie wählen → Zeitstempel und drei IAQ-Parameter importieren → Datenqualität prüfen → Screening / Bericht.")
-    st.info("**Pflicht:** Raum-ID, Profil, Heiz-/Kühlperiode, Lüftungsart, Messstrategie, Nachweiszweck und je Messpunkt Datum/Uhrzeit, CO₂, Lufttemperatur, relative Feuchte. Weitere Angaben sind je nach Nachweiszweck bedingt erforderlich.")
+    st.markdown("**Ablauf:** Bewertungsprofil wählen → Räume, Lüftungsart, Messart und Messgerät erfassen → Gerätedatei importieren (wird automatisch vereinheitlicht) → Nutzung aus Zeitplan, Kalender oder Präsenzsensor → Qualitätsprüfung → Bericht.")
+    st.info("**Pflicht:** Raum-ID, Profil, Heiz-/Kühlperiode, Lüftungsart, Messart und je Messpunkt Datum/Uhrzeit, CO₂, Lufttemperatur, relative Feuchte. Weitere Angaben sind je nach Messart bedingt erforderlich.")
     with st.expander("Tool testen ohne Messdaten: synthetisches Beispielprojekt laden"):
         st.caption("Erzeugt Räume mit künstlichen Messreihen (5 Arbeitstage, 5-min-Intervall; letzter Raum als Stichprobe). Ersetzt das aktuelle Projekt.")
         n_demo = st.select_slider("Anzahl Räume", options=[1, 2, 3, 6, 12, 20], value=3)
@@ -166,20 +177,21 @@ if page == "Übersicht":
             st.session_state.project = build_demo_project(n_demo)
             st.rerun()
     if p["rooms"]:
-        st.dataframe(pd.DataFrame([{"Raum": r["name"], "Strategie": r.get("strategy"), "Vollständige Punkte": len(long_to_samples(r)["samples"]), "Pflichtlücken": len(required_issues(r, a))} for r in p["rooms"]]), hide_index=True)
+        st.dataframe(pd.DataFrame([{"Raum": r["name"], "Messart": r.get("strategy"), "Vollständige Punkte": len(long_to_samples(r)["samples"]), "Pflichtlücken": len(required_issues(r, a))} for r in p["rooms"]]), hide_index=True)
 
-elif page == "1 · Nachweisrahmen":
-    st.subheader("Nachweiszweck und Regelprofil · Pflicht")
+elif page == "1 · Projekt & Bewertung":
+    st.subheader("Bewertungsprofil und Messart · Pflicht")
     c1, c2 = st.columns(2)
     with c1:
         a["basis"] = st.selectbox("Bewertungsprofil *", PROFILES, index=PROFILES.index(a.get("basis")) if a.get("basis") in PROFILES else 0)
         a["period"] = st.selectbox("Betriebsfall *", PERIODS, index=PERIODS.index(a.get("period")) if a.get("period") in PERIODS else 0)
     with c2:
-        choices = ["Bitte auswählen"] + PURPOSES
-        old = a.get("purpose")
-        choice = st.selectbox("Nachweiszweck *", choices, index=choices.index(old) if old in choices else 0)
-        a["purpose"] = "" if choice == choices[0] else choice
+        ds = a.get("default_strategy") if a.get("default_strategy") in STRATEGIES else STRATEGIES[1]
+        a["default_strategy"] = st.selectbox("Messart (Vorgabe für neue Räume) *", STRATEGIES, index=STRATEGIES.index(ds),
+                                             help="Die Messart kann pro Raum angepasst werden (Seite 2).")
         a["notes"] = st.text_input("Besonderheiten zum Nachweis (freiwillig)", a.get("notes", ""))
+    st.dataframe(pd.DataFrame([{"Messart": k, "Zweck": v["zweck"], "Aussagekraft": v["aussage"]} for k, v in STRATEGY_INFO.items()]), hide_index=True)
+    st.caption("Der Nachweis bestätigt die Einhaltung der Vorgaben im **Normalbetrieb**. Wo die Norm es vorsieht, sind Abweichungen in höchstens 10 % der Nutzungszeit zulässig (SIA 382/1:2025 Ziff. 2.2.5.6; SIA 180:2014 Ziff. 3.5.1.3/3.5.1.4). Ein Jahresnachweis setzt deshalb eine Langzeitmessung über ein Jahr Normalbetrieb voraus.")
     with st.expander("Bewertungslogik und Gültigkeitsbereich"):
         if a["basis"] == PROFILE_SIA:
             st.write("**SIA 382/1:2025:** IDA-2-Vergleich für alle Lüftungsarten (Tab. 18, Fussnote 3): CO₂ innen ≤ CO₂ aussen + 800 ppm. Ohne Aussenwert gilt der Bezugswert 400 ppm (Tab. 18, Fussnote 2). Operative Temperatur wird nicht aus Lufttemperatur geschätzt.")
@@ -189,9 +201,7 @@ elif page == "1 · Nachweisrahmen":
             st.write("**Minergie-ECO 2023.1:** Kein eigenständiger allgemeiner Betriebsgrenzwert für diese drei Sensormessgrössen. Schadstoffnachweise (z. B. Formaldehyd, TVOC, Radon) erfordern gesonderte Messverfahren und Zertifizierungsvoraussetzungen.")
         else:
             st.write("**BT:** Projektspezifisches Screening mit SECO-Orientierungswerten. Ergänzende SIA-IDA-2-Klasse und ECO-Schadstoffnachweis sind getrennt dokumentiert; keine pauschale Kombination aller Zahlen zu rechtlichen Grenzwerten.")
-    if a["purpose"] == PURPOSES[2]:
-        st.warning("Ein langfristiger oder saisonaler Nachweis ist mit einer Momentaufnahme oder einzelnen Messwoche nicht belastbar. Auch kontinuierliches Monitoring erfordert geeignete Zeitabdeckung und Saisontrennung.")
-    st.caption("Nachweiszweck bestimmt die Aussagekraft, nicht automatisch die gesetzlichen Anforderungen. Das Profil bestimmt den Referenzvergleich.")
+    st.caption("Die Messart bestimmt die Aussagekraft, das Bewertungsprofil den Referenzvergleich.")
     st.divider()
     with st.expander("Objektangaben (für Bericht; Höhenlage nötig für Feuchtebewertung)", expanded=not b.get("altitude_m")):
         b["name"] = st.text_input("Gebäudebezeichnung", b.get("name", ""))
@@ -206,14 +216,16 @@ elif page == "1 · Nachweisrahmen":
         rep["version"] = st.text_input("Version", rep.get("version", "1.0"))
         rep["author"] = st.text_input("Erstellt durch", rep.get("author", ""))
 
-elif page == "2 · Räume & Messstrategie":
-    st.subheader("Raum und Messstrategie")
+elif page == "2 · Räume & Messart":
+    st.subheader("Raum, Messart und Messgerät")
     if st.button("+ Raum hinzufügen", type="primary"):
         existing = {r.get("name", "") for r in p["rooms"]}
         number = 1
         while f"Raum {number}" in existing:
             number += 1
-        p["rooms"].append(new_room(number))
+        nr = new_room(number)
+        nr["strategy"] = a.get("default_strategy") if a.get("default_strategy") in STRATEGIES else STRATEGIES[1]
+        p["rooms"].append(nr)
         st.rerun()
     if not p["rooms"]:
         st.info("Bitte zunächst einen Raum anlegen.")
@@ -234,19 +246,34 @@ elif page == "2 · Räume & Messstrategie":
             else:
                 r["active_cooling"] = False
         with c2:
-            r["strategy"] = st.selectbox("Messstrategie *", STRATEGIES, index=STRATEGIES.index(r.get("strategy")) if r.get("strategy") in STRATEGIES else 0, key=f"strategy_{selected}")
+            r["strategy"] = st.selectbox("Messart *", STRATEGIES, index=STRATEGIES.index(r.get("strategy")) if r.get("strategy") in STRATEGIES else 0, key=f"strategy_{selected}")
             st.info(STRATEGY_INFO[r["strategy"]]["vorschlag"])
             st.caption("**Aussagegrenze:** " + STRATEGY_INFO[r["strategy"]]["aussage"])
         st.caption("* = Pflicht für die raumweise Grundbewertung. Für saisonübergreifendes Monitoring separate Betriebsfälle ausweisen.")
-        if a["purpose"] == PURPOSES[2] and r["strategy"] != STRATEGIES[2]:
-            st.warning("Für langfristige Verlaufs- oder Saisonaussagen ist diese Strategie allein nicht geeignet.")
-        with st.expander("Bedingt erforderlich: Nutzungszeit, Messkampagne und Rückverfolgbarkeit"):
+        with c2:
+            dev_opts = [""] + [d["id"] for d in DEVICES] + ["extern"]
+            cur = r.get("device_ref") or ("extern" if r.get("device_model") and not r.get("device_ref") else "")
+            sel = st.selectbox("Messgerät (Gerätematrix)", dev_opts, index=dev_opts.index(cur) if cur in dev_opts else 0, key=f"devsel_{selected}",
+                               format_func=lambda x: "Bitte auswählen" if x == "" else (EXTERN if x == "extern" else f"{DEV_BY_ID[x]['geraete_nr']} · {imp.device_label(DEV_BY_ID[x])}"))
+            if sel == "extern":
+                r["device_ref"] = ""
+                r["device_model"] = st.text_input("Hersteller und Modell", r.get("device_model", "") if not DEV_BY_ID.get(r.get("device_ref")) else "", key=f"devext_{selected}")
+            elif sel:
+                d = DEV_BY_ID[sel]
+                r["device_ref"], r["device_model"] = sel, imp.device_label(d)
+                cov = imp.device_coverage(d)
+                if not all(cov.values()):
+                    st.error("Gerät misst nicht alle drei Pflichtgrössen: fehlt " + ", ".join(imp.PARAM_NAME[k] for k, v in cov.items() if not v) + ". Zweites Gerät nötig.")
+                st.caption(f"Genauigkeit (Hersteller): {imp.device_accuracy(d) or 'k. A.'} · Datenformat: {d.get('daten_format') or 'k. A.'}")
+            else:
+                r["device_ref"] = ""
+        with st.expander("Bedingt erforderlich: Nutzungszeit, Messzeitraum und Rückverfolgbarkeit"):
             c3, c4 = st.columns(2)
             with c3:
                 r["start_date"] = st.text_input("Messbeginn (JJJJ-MM-TT)", r.get("start_date", ""), key=f"begin_{selected}")
                 r["end_date"] = st.text_input("Messende (JJJJ-MM-TT)", r.get("end_date", ""), key=f"end_{selected}")
                 r["measurement_interval_min"] = st.number_input("Sollintervall (Minuten, 0 = nicht angegeben)", min_value=0, max_value=1440, value=int(r.get("measurement_interval_min") or 0), key=f"interval_{selected}") or None
-                st.caption("Tatsächliche Nutzungszeit (strukturiert, für nutzungszeitbezogene Auswertung)")
+                st.caption("Nutzungszeit als Zeitplan (alternativ Kalender/Präsenzsensor auf Seite 3)")
                 r["usage_days"] = st.multiselect("Nutzungstage", WEEKDAYS, default=[d for d in r.get("usage_days", []) if d in WEEKDAYS], key=f"udays_{selected}")
                 cu1, cu2 = st.columns(2)
                 r["usage_start"] = cu1.text_input("Von (HH:MM)", r.get("usage_start", ""), key=f"ustart_{selected}", placeholder="08:00")
@@ -263,7 +290,7 @@ elif page == "2 · Räume & Messstrategie":
                 r["sensor_height_m"] = cp1.text_input("Messhöhe [m] (empf. 0,75–1,25)", str(r.get("sensor_height_m") or ""), key=f"sh_{selected}")
                 r["sensor_count"] = cp2.text_input("Anzahl Messgeräte (empf. 1 je 50 m²)", str(r.get("sensor_count") or ""), key=f"sc_{selected}")
                 r["position_check"] = st.checkbox("Nicht an Tür, Fenster, Zuluft oder direkt bei Personen (Bacher 2025)", value=bool(r.get("position_check", False)), key=f"pc_{selected}")
-                r["device_id"] = st.text_input("Messgerät / Seriennummer", r.get("device_id", ""), key=f"device_{selected}")
+                r["device_id"] = st.text_input("Seriennummer Messgerät", r.get("device_id", ""), key=f"device_{selected}")
                 r["calibration"] = st.text_input("Prüfung / Kalibrierung", r.get("calibration", ""), key=f"cal_{selected}")
                 r["ventilation_notes"] = st.text_input("Lüftungs- / Fensterbetrieb", r.get("ventilation_notes", ""), key=f"ventnotes_{selected}")
                 r["selection_reason"] = st.text_input("Raumauswahlgrund (Mehrraumnachweis)", r.get("selection_reason", ""), key=f"reason_{selected}")
@@ -295,7 +322,7 @@ elif page == "2 · Räume & Messstrategie":
                 p["rooms"] = [x for x in p["rooms"] if x["id"] != selected]
                 st.rerun()
 
-elif page == "3 · Messwerte":
+elif page == "3 · Messwerte & Nutzung":
     st.subheader("Messwerte erfassen · vier Pflichtangaben je Messpunkt")
     if not p["rooms"]:
         st.warning("Bitte zuerst einen Raum anlegen.")
@@ -316,23 +343,150 @@ elif page == "3 · Messwerte":
             except ValueError as exc:
                 st.error(str(exc))
         st.divider()
-        st.markdown("**CSV-Import**")
-        st.caption("Bevorzugt eine Zeile pro Zeitpunkt mit `timestamp,co2,temp,rh`. Vorhandene V7-Dateien im Langformat `timestamp,parameter,value,unit` werden ebenfalls akzeptiert.")
-        example = pd.DataFrame([{"timestamp": "2026-10-30 10:30", "co2": 850, "temp": 22.0, "rh": 45.0}])
-        st.download_button("CSV-Vorlage herunterladen", example.to_csv(index=False).encode("utf-8-sig"), file_name="iaq_3parameter_vorlage.csv", mime="text/csv")
-        uploaded = st.file_uploader("CSV auswählen", type=["csv"], key=f"csv_{rid}")
+        st.markdown("**Datei vom Messgerät importieren** · wird automatisch vereinheitlicht (Lokalzeit, ppm, °C, %)")
+        dev = DEV_BY_ID.get(r.get("device_ref"))
+        prof = PROFILES_IMP.get(r.get("device_ref")) if dev else None
+        if dev:
+            rngs = ", ".join(f"{imp.PARAM_NAME[k]} {rg[0]:g}–{rg[1]:g} {imp.CANON_UNIT[k]}" for k in imp.PARAMS if (rg := imp.device_range(dev, k)))
+            st.info(f"**Messgerät:** {imp.device_label(dev)} · Exportformat laut Gerätematrix: {dev.get('daten_format') or 'k. A.'}  \n"
+                    f"Messbereich (Werte ausserhalb werden ausgeschlossen): {rngs or 'k. A.'}")
+            st.caption("Geprüftes Importprofil vorhanden." if prof else
+                       "Für dieses Gerät liegt noch keine geprüfte Beispieldatei vor: Spalten, Datumsformat und Einheiten werden automatisch erkannt – Zuordnung unten kontrollieren.")
+        else:
+            st.info("Kein Gerät aus der Gerätematrix gewählt (Seite 2). Externe Geräte: Datei im **IAQ-Standardformat** liefern.")
+        with st.expander("IAQ-Standardformat für externe Geräte (Vorgabe)"):
+            st.dataframe(pd.DataFrame(imp.STANDARD_SPEC, columns=["Spalte", "Inhalt und Einheit"]), hide_index=True)
+            st.markdown("\n".join(f"- {x}" for x in imp.STANDARD_RULES))
+            st.download_button("Vorlage IAQ-Standardformat (CSV)", imp.standard_template_csv(), file_name="IAQ_Standardformat_Vorlage.csv", mime="text/csv")
+        uploaded = st.file_uploader("Gerätedatei (CSV, TXT, XLSX, JSON)", type=["csv", "txt", "xlsx", "json"], key=f"devfile_{rid}")
         if uploaded is not None:
+            data = uploaded.getvalue()
             try:
-                df = pd.read_csv(io.BytesIO(uploaded.getvalue()), sep=None, engine="python", encoding="utf-8-sig", dtype=str)
-                st.dataframe(df.head(8), hide_index=True)
-                if st.button("CSV importieren", key=f"csv_add_{rid}"):
+                table = imp.read_table(data, uploaded.name)
+            except Exception as exc:  # noqa: BLE001 – Meldung für Nutzer
+                table = None
+                st.error(f"Datei nicht lesbar: {exc}")
+            if table and {"parameter", "value"} <= {str(h).strip().lower() for h in table["headers"]}:
+                df = pd.DataFrame(table["rows"], columns=table["headers"]).astype(str)
+                if st.button("Langformat (V7) importieren", key=f"long_{rid}"):
                     new, errs = import_measurements(df)
                     r["measurements"].extend(new)
-                    st.success(f"{len(new) // 3 if {'co2','temp','rh'}.issubset(set(df.columns.str.lower())) else len(new)} Zeilen / Messwertgruppen übernommen ({len(new)} Einzelwerte).")
-                    if errs:
-                        st.warning(f"{len(errs)} CSV-Zeilen nicht übernommen. Beispiele: " + "; ".join(errs[:4]))
-            except (ValueError, UnicodeError, pd.errors.ParserError) as exc:
-                st.error(f"Import nicht möglich: {exc}")
+                    st.success(f"{len(new)} Einzelwerte übernommen.")
+                table = None
+            if table:
+                mp = imp.detect_mapping(table, prof)
+                hdrs = table["headers"]
+                st.caption(f"Erkannt: {table['meta'].get('format')} · Kopfzeile Nr. {table['meta'].get('header_row')} · {len(table['rows'])} Datenzeilen"
+                           + (f" · Trennzeichen «{table['meta']['delimiter']}»" if table["meta"].get("delimiter") else "")
+                           + (f" · Blatt «{table['meta']['sheet']}»" if table["meta"].get("sheet") else ""))
+                for n in mp["notes"]:
+                    st.caption(n)
+                opts = [None] + list(range(len(hdrs)))
+                fmt_col = lambda i: "– nicht vorhanden –" if i is None else f"{hdrs[i]}"
+                cc = st.columns(5)
+                labels = [("timestamp", "Zeitstempel"), ("date", "Datum (separat)"), ("time", "Uhrzeit (separat)"), ("co2", "CO₂"), ("temp", "Temperatur")]
+                for col_, (k, lab) in zip(cc, labels):
+                    cur = mp["columns"][k]
+                    mp["columns"][k] = col_.selectbox(lab, opts, index=opts.index(cur), format_func=fmt_col, key=f"map_{k}_{rid}")
+                cr = st.columns(5)
+                cur = mp["columns"]["rh"]
+                mp["columns"]["rh"] = cr[0].selectbox("Relative Feuchte", opts, index=opts.index(cur), format_func=fmt_col, key=f"map_rh_{rid}")
+                fm = imp.mapping_formats(table, mp)
+                dt_fmt = d_fmt = None
+                if "dt" in fm:
+                    choices = fm["dt"] or list(imp.DT_FORMATS)
+                    dt_fmt = cr[1].selectbox("Datumsformat", choices, key=f"dtf_{rid}",
+                                             help="Mehrere Einträge = Datei ist mehrdeutig (z. B. 03/04/2026). Bitte bewusst wählen.")
+                    if not fm["dt"]:
+                        cr[1].warning("Zeitformat nicht automatisch erkannt.")
+                    elif len(fm["dt"]) > 1:
+                        cr[1].warning("Datumsformat mehrdeutig – bitte bestätigen.")
+                elif "date" in fm:
+                    d_fmt = cr[1].selectbox("Datumsformat", fm["date"] or list(imp.D_FORMATS), key=f"df_{rid}")
+                tz = cr[2].radio("Zeitbasis der Datei", ["Lokalzeit", "UTC"], index=0 if mp["tz"] == "Lokalzeit" else 1, key=f"tz_{rid}")
+                avg_opts = [None, 1, 5, 10, 15]
+                avg = cr[3].selectbox("Mittelung", avg_opts, format_func=lambda x: "keine (Originalintervall)" if x is None else f"{x}-min-Mittelwerte", key=f"avg_{rid}",
+                                      help="Nur nötig bei Intervallen unter 1 Minute (Projektvorschlag: 5 min). Es werden keine Lücken gefüllt.")
+                units, unconfirmed = {}, []
+                cu = st.columns(3)
+                for col_, k in zip(cu, imp.PARAMS):
+                    det = mp["units"].get(k)
+                    ch = imp.UNIT_CHOICES[k]
+                    units[k] = col_.selectbox(f"Einheit {imp.PARAM_NAME[k]} in der Datei", ch, index=ch.index(det) if det in ch else 0, key=f"unit_{k}_{rid}")
+                    if det is None:
+                        unconfirmed.append(imp.PARAM_NAME[k])
+                    elif det not in ch:
+                        col_.error(f"Einheit «{det}» nicht eindeutig umrechenbar – Gerät auf ppm/°C/% umstellen.")
+                ok_units = True
+                if unconfirmed:
+                    ok_units = st.checkbox("Einheiten geprüft: Datei enthält keine Einheitsangabe für " + ", ".join(unconfirmed) + " – gewählte Einheit gemäss Geräteeinstellung/Datenblatt bestätigt", key=f"uconf_{rid}")
+                if ok_units:
+                    try:
+                        res = imp.convert(table, mp, dt_format=dt_fmt, date_format=d_fmt, units=units, tz_mode=tz, device=dev, average_min=avg)
+                    except ValueError as exc:
+                        res = None
+                        st.warning(str(exc))
+                    if res:
+                        lg = res["log"]
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Datenzeilen", lg["rohzeilen"])
+                        m2.metric("Messpunkte", lg["messpunkte"])
+                        m3.metric("davon vollständig", lg["vollstaendig"])
+                        m4.metric("Zeitraum", f"{(lg['von'] or '')[:10]} – {(lg['bis'] or '')[:10]}")
+                        if lg["umrechnungen"]:
+                            st.caption("Umrechnung: " + "; ".join(lg["umrechnungen"]))
+                        if lg["ausschluesse"]:
+                            st.dataframe(pd.DataFrame([{"Ausschluss / Bereinigung": k, "Anzahl": v} for k, v in lg["ausschluesse"].items()]), hide_index=True)
+                        prev = pd.DataFrame(res["records"][:60]).pivot_table(index="timestamp", columns="parameter", values="value", aggfunc="first").head(8)
+                        st.dataframe(prev)
+                        replace = st.checkbox("Bestehende Messwerte dieses Raums ersetzen", value=False, key=f"repl_{rid}")
+                        if st.button("Vereinheitlichte Daten übernehmen", type="primary", key=f"take_{rid}"):
+                            if replace:
+                                r["measurements"] = [m for m in r["measurements"] if m.get("parameter") not in CORE]
+                            r["measurements"].extend(res["records"])
+                            r.setdefault("import_log", []).append({"datei": uploaded.name, "importiert": datetime.now().strftime("%Y-%m-%d %H:%M"), **lg})
+                            if not r.get("start_date") and lg["von"]:
+                                r["start_date"], r["end_date"] = lg["von"][:10], lg["bis"][:10]
+                            if not r.get("measurement_interval_min") and lg["median_intervall_s"] and not avg:
+                                r["measurement_interval_min"] = max(1, round(lg["median_intervall_s"] / 60))
+                            st.success(f"{lg['vollstaendig']} vollständige Messpunkte übernommen; Importprotokoll gespeichert.")
+        if r.get("import_log"):
+            with st.expander(f"Importprotokoll ({len(r['import_log'])} Import/e)"):
+                st.dataframe(pd.DataFrame([{"Datei": x.get("datei"), "Gerät": x.get("geraet"), "Importiert": x.get("importiert"), "Von": x.get("von"), "Bis": x.get("bis"),
+                                            "Messpunkte": x.get("messpunkte"), "Vollständig": x.get("vollstaendig"), "Ausschlüsse": sum((x.get("ausschluesse") or {}).values()),
+                                            "Umrechnung": "; ".join(x.get("umrechnungen") or []) or "–"} for x in r["import_log"]]), hide_index=True)
+        st.divider()
+        st.markdown("**Nutzung / Belegung**")
+        osrc = r.get("occupancy_source") if r.get("occupancy_source") in OCC_SOURCES else OCC_SOURCES[0]
+        r["occupancy_source"] = st.radio("Quelle der Nutzungszeit", OCC_SOURCES, index=OCC_SOURCES.index(osrc), horizontal=True, key=f"osrc_{rid}")
+        smp = long_to_samples(r)["samples"]
+        span = (smp[0]["timestamp"], smp[-1]["timestamp"]) if smp else (None, None)
+        if r["occupancy_source"] == OCC_SOURCES[1]:
+            st.caption("Export des Raumkalenders, z. B. Outlook: Kalender → Freigeben/Speichern als .ics. Gezählt werden gebuchte Termine (Serien inkl. Ausnahmen); ganztägige und abgesagte Termine nicht. "
+                       "Hinweis: Eine Buchung belegt nicht, dass der Raum tatsächlich genutzt wurde.")
+            ics = st.file_uploader("Kalenderdatei (.ics)", type=["ics"], key=f"ics_{rid}")
+            if ics is not None and st.button("Kalender einlesen", key=f"icsgo_{rid}"):
+                try:
+                    out = imp.parse_ics(ics.getvalue(), *span)
+                    r["occupancy_intervals"], r["occupancy_import_log"] = out["intervals"], {"datei": ics.name, **out["log"]}
+                    st.success(f"{out['log']['intervalle']} Belegungsintervalle ({out['log']['stunden']} h) im Messzeitraum übernommen.")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Kalender nicht lesbar: {exc}")
+        elif r["occupancy_source"] == OCC_SOURCES[2]:
+            st.caption("Datei mit Zeitstempel und Präsenz (0/1, belegt/frei) oder Personenzahl je Zeile, z. B. Trendexport der Gebäudeautomation. Belegt = Wert > 0.")
+            pres = st.file_uploader("Präsenzdaten (CSV, XLSX)", type=["csv", "txt", "xlsx"], key=f"pres_{rid}")
+            if pres is not None and st.button("Präsenzdaten einlesen", key=f"presgo_{rid}"):
+                try:
+                    out = imp.parse_presence(pres.getvalue(), pres.name)
+                    r["occupancy_intervals"], r["occupancy_import_log"] = out["intervals"], {"datei": pres.name, **out["log"]}
+                    st.success(f"{out['log']['intervalle']} Belegungsintervalle ({out['log']['stunden']} h) übernommen.")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Präsenzdaten nicht lesbar: {exc}")
+        else:
+            st.caption("Zeitplan wird auf Seite 2 erfasst (Wochentage + Von/Bis).")
+        used = filter_usage(smp, r)
+        st.write(f"**Nutzungszeit:** {usage_label(r)}" + (f" · {len(used)} von {len(smp)} Messpunkten in der Nutzungszeit" if used is not None and smp else ""))
+        st.divider()
         with st.expander("Freiwillig: zusätzliche Schadstoffmessungen dokumentieren (keine automatische ECO-Zertifizierung)"):
             with st.form(f"additional_{rid}", clear_on_submit=True):
                 extra_param = st.selectbox("Schadstoff", ["Formaldehyd", "TVOC", "Radon"])

@@ -66,10 +66,13 @@ class TestLogic(unittest.TestCase):
     def test_hybrid_without_mode_required(self):
         r=room();r['ventilation']=VENTS[2];r['measurements']=measurement_records('2026-10-30 10:30',900,22,45)
         self.assertTrue(any('hybrid' in x for x in required_issues(r, assess())))
-    def test_strategic_purpose_mismatch(self):
-        r=room();r['strategy']=STRATEGIES[0]
-        hints=conditional_hints(r,{'basis':PROFILE_BT,'period':PERIODS[0],'purpose':PURPOSES[2]})
-        self.assertTrue(any('nicht belastbar' in x for x in hints))
+    def test_messart_hints(self):
+        r=room();r['strategy']=STRATEGIES[1]
+        hints=conditional_hints(r,{'basis':PROFILE_BT,'period':PERIODS[0]})
+        self.assertTrue(any('Nutzungszeit nicht erfasst' in x for x in hints))
+        r['strategy']=STRATEGIES[0]
+        hints=conditional_hints(r,{'basis':PROFILE_BT,'period':PERIODS[0]})
+        self.assertFalse(any('Nutzungszeit nicht erfasst' in x for x in hints))
     def test_wide_csv_and_long_csv(self):
         wide=pd.DataFrame([{'timestamp':'2026-10-30 10:30','co2':'910','temp':'22,3','rh':'44'}])
         vals,errs=import_measurements(wide)

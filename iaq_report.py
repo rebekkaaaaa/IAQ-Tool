@@ -74,7 +74,7 @@ def fdt(dt, with_time=False) -> str:
 
 VSHORT = {"Mechanisch": "mech.", "Natürlich": "Fenster", "Hybrid – mechanischer Modus": "hybrid mech.",
           "Hybrid – natürlicher Modus": "hybrid nat."}
-SSHORT = {STRATEGIES[0]: "Stichprobe", STRATEGIES[1]: "Kampagne", STRATEGIES[2]: "Monitoring"}
+SSHORT = {STRATEGIES[0]: "Stichprobe", STRATEGIES[1]: "Messkampagne", STRATEGIES[2]: "Langzeitmessung"}
 
 
 def chip(status: str, label: str | None = None) -> str:
@@ -295,7 +295,9 @@ def _frame(a, bs, building):
     start, end = _period(bs)
     years = sum(1 for b in bs if b["ev"]["jahr"])
     strat = ", ".join(sorted({SSHORT.get(b["room"].get("strategy"), "–") for b in bs}))
-    cells = [("Nachweiszweck", a.get("purpose")), ("Messstrategie", strat), ("Betriebsfall", a.get("period")),
+    devs = sorted({str(b["room"].get("device_model") or "").strip() for b in bs} - {""})
+    dev = (devs[0] if len(devs) == 1 else f"{len(devs)} Gerätetypen") if devs else "nicht angegeben"
+    cells = [("Messart", strat), ("Messgerät", dev[:34]), ("Betriebsfall", a.get("period")),
              ("Messzeitraum", f"{fdt(start)} – {fdt(end)}"), ("Jahresbezug", f"{years} von {len(bs)} Räumen"),
              ("Objekt-ID · Höhe", f"{building.get('object_id') or '–'} · {building.get('altitude_m') or '–'} m ü. M.")]
     return "<div class='frame'>" + "".join(f"<div><span>{e(k)}</span><b>{e(v)}</b></div>" for k, v in cells) + "</div>"
@@ -454,7 +456,7 @@ def _esg(bs):
             ("", "Nutzungszeit im Bereich", rng([b["ev"]["topics"]["Thermischer Komfort"].get("kpi") for b in v])),
             ("Raumluftfeuchte", "Räume eingehalten", cnt("Raumluftfeuchte")),
             ("Datenbasis", "Räume mit Jahresbezug", f"{sum(1 for b in bs if b['ev']['jahr'])} von {len(bs)}"),
-            ("", "Räume mit Monitoring", f"{sum(1 for b in bs if b['room'].get('strategy') == STRATEGIES[2])} von {len(bs)}")]
+            ("", "Räume mit Langzeitmessung", f"{sum(1 for b in bs if b['room'].get('strategy') == STRATEGIES[2])} von {len(bs)}")]
     return ("<h2>ESG-Kennzahlen nach Fokusthema</h2><table><tr><th style='width:30%'>Fokusthema</th><th>Kennzahl</th><th class='n'>Wert</th></tr>"
             + "".join(f"<tr><td><b>{e(g) if g else ''}</b></td><td>{e(k)}</td><td class='n'><b>{e(x)}</b></td></tr>" for g, k, x in rows) + "</table>"
             "<p class='muted'>Bezug: GRESB 2026 TC5.2 (Innenraumluftqualität, IEQ); EU Level(s) 4.1. Messbeleg, keine Erfüllungsaussage.</p>")
@@ -507,7 +509,7 @@ def _method(p, bs, meta, plan):
 <h2>Bewertungskriterien</h2>{_criteria()}
 <div class='note'><b>Einordnung</b><ul>
 <li>Gesamt = ungünstigstes Fokusthema (Luftqualität, Thermik, Feuchte).</li>
-<li><b>{TOL_SHARE:g} %-Regel</b> nur wo die Norm sie nennt; Bezug: Nutzungszeit eines typischen Jahres, zeitgewichtet.</li>
+<li><b>{TOL_SHARE:g} %-Regel</b> nur wo die Norm sie nennt: Der Nachweis bestätigt die Vorgaben im Normalbetrieb; zulässig sind Abweichungen in ≤ 10 % der Nutzungszeit eines Jahres (zeitgewichtet).</li>
 <li>IDA-Klassen für alle Lüftungsarten (SIA 382/1:2025 Tab. 18, Fussnote 3).</li></ul></div>
 {lim}{na_html}
 {_sources()}{_sig(meta)}

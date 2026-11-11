@@ -1,4 +1,4 @@
-# P6 – Messstrategien und Nachweiszwecke (Stand V12)
+# P6 – Messstrategien und Nachweiszwecke (Stand V8)
 
 **Quelle:** P6-Projektauftrag, S. 3–4 und 7–9. Konkrete Zeitdauern/Intervalle sind **Projektvorschläge**, keine pauschalen gesetzlichen Vorgaben.
 

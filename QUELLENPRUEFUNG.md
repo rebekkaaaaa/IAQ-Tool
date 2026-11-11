@@ -21,3 +21,6 @@
 | Formaldehyd ≤ 60 µg/m³ aktiv / ≤ 30 passiv; TVOC ≤ 1'000 aktiv / ≤ 500 passiv; Radon ≤ 100 (Neubau) / ≤ 300 Bq/m³ (Erneuerung) | Minergie-ECO Vorgabenkatalog v2023.1, Vorgaben 120.03, 120.05, 110.04, 110.50 | geprüft; im Tool nur dokumentiert (Zertifizierungsmessung nach Baufertigstellung) |
 | GRESB TC5.2, Level(s) 4.1 | GRESB 2026; JRC 2021 | geprüft, keine Erfüllungsaussage |
 | Messhöhe 0,75–1,25 m; 1 Messgerät je 50 m²; nicht an Tür, Fenster, Zuluft, Personen | Bacher (2025), FHNW-Thesis EUT-P6-24HS, Kap. 9 (1 Gerät/50 m² dort aus BMK-Richtlinie Innenraumluft Teil 7 zitiert) | geprüft; im Tool als Hinweis, nicht als Bewertung |
+| Messbereich, Genauigkeit, Exportformat je Gerät | Gerätematrix Messgeräteprojekt (`devices.json`, 27 Geräte; Herstellerangaben) | übernommen, nicht einzeln gegen Datenblätter geprüft |
+| Import-Umrechnungen °F→°C, K→°C, Vol.-%→ppm | physikalische Definition (1 Vol.-% = 10 000 ppm) | eindeutig |
+| Spaltenlayout der Geräteexporte | – | **offen:** je Gerät eine Original-Exportdatei nötig |
