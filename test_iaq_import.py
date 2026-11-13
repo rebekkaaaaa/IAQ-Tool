@@ -30,7 +30,7 @@ class TestImport(unittest.TestCase):
         self.assertIn("Temperatur: °F → °C", res["log"]["umrechnungen"])
 
     def test_ambiguous_us_date_needs_choice(self):
-        data = b"Time,Carbon dioxide(ppm),Temperature(\xc2\xb0C),Relative humidity(%)\n03/04/2026 10:00,800,22,45\n03/04/2026 10:05,810,22,45\n"
+        data = b"Time,Carbon dioxide(ppm),Temperature(\xc2\xb0C),Relative humidity(%)\n03/04/2026 10:00,800,22,45\n03/04/2026 10:05,810,22,45\n03/04/2026 10:10,820,22,45\n"
         with self.assertRaises(ValueError):
             imp.auto_import(data, "b.csv")
         res = imp.auto_import(data, "b.csv", overrides={"dt_format": "MM/TT/JJJJ hh:mm[:ss] (US)"})
@@ -39,7 +39,7 @@ class TestImport(unittest.TestCase):
         self.assertEqual(res["log"]["von"], "2026-04-03 10:00")
 
     def test_missing_unit_must_be_confirmed(self):
-        data = b"timestamp,co2,temp,rh\n2026-10-30 10:30,910,22.3,44\n"
+        data = b"timestamp,co2,temp,rh\n2026-10-30 10:30,910,22.3,44\n"          # zu wenige Werte zum Ableiten
         with self.assertRaises(ValueError):
             imp.auto_import(data, "c.csv")
         res = imp.auto_import(data, "c.csv", overrides={"units": {"co2": "ppm", "temp": "°C", "rh": "%"}})
@@ -87,22 +87,39 @@ class TestImport(unittest.TestCase):
         self.assertFalse(imp.device_coverage(DEV["wabool-6011"])["temp"])
         self.assertTrue(all(imp.device_coverage(DEV["aranet-tdspc0h3"]).values()))
 
-    def test_ics_weekly_series(self):
-        ics = ("BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;TZID=Europe/Zurich:20261102T090000\nDTEND;TZID=Europe/Zurich:20261102T100000\n"
-               "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4\nEXDATE;TZID=Europe/Zurich:20261104T090000\nEND:VEVENT\n"
-               "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20261103\nDTEND;VALUE=DATE:20261104\nEND:VEVENT\n"
-               "BEGIN:VEVENT\nDTSTART:20261105T130000Z\nDTEND:20261105T140000Z\nEND:VEVENT\nEND:VCALENDAR\n")
-        out = imp.parse_ics(ics.encode())
-        self.assertEqual(out["log"]["ganztaegig"], 1)
-        self.assertEqual(out["intervals"][0], ["2026-11-02 09:00", "2026-11-02 10:00"])
-        self.assertEqual(len(out["intervals"]), 4)        # 4 Serientermine − 1 Ausnahme + 1 Einzeltermin
-        self.assertIn(["2026-11-05 14:00", "2026-11-05 15:00"], out["intervals"])
+    def test_smart_ambiguous_date_resolved_by_series(self):
+        rows = ["Time,Carbon dioxide(ppm),Temperature(°C),Relative humidity(%)"]
+        t0 = datetime(2026, 3, 4, 23, 0)          # über Mitternacht: 04.03. → 05.03.
+        for i in range(12):
+            t = t0 + timedelta(minutes=10 * i)
+            rows.append(f"{t:%m/%d/%Y %H:%M},{700+i},22,45")
+        res = imp.auto_import("\n".join(rows).encode(), "s.csv")
+        self.assertEqual(res["log"]["von"], "2026-03-04 23:00")
+        self.assertTrue(any("automatisch bestimmt" in x for x in res["log"]["bereinigung"]))
+
+    def test_smart_unit_inference(self):
+        rows = ["timestamp,co2,temp,rh"] + [f"2026-11-02 08:{m:02d},{600+m},{70+m/10:.1f},0.{40+m}" for m in range(0, 30, 5)]
+        res = imp.auto_import("\n".join(rows).encode(), "u.csv")
+        s = long_to_samples(room_with(res["records"]))["samples"]
+        self.assertAlmostEqual(s[0]["Temperatur"], (70 - 32) * 5 / 9, places=2)   # °F erkannt
+        self.assertAlmostEqual(s[0]["Relative Feuchte"], 40.0)                     # Anteil → %
+
+    def test_cleaning_sort_duplicates_sentinel_gap(self):
+        rows = ["timestamp;co2_ppm;temp_c;rh_pct", "2026-11-02 08:10;650;21;40", "2026-11-02 08:00;600;21;40",
+                "2026-11-02 08:05;-999;21;40", "2026-11-02 08:05;-999;21;40", "2026-11-02 08:15;660;21;40", "2026-11-02 12:15;700;21;40"]
+        res = imp.auto_import("\n".join(rows).encode(), "k.csv")
+        lg = res["log"]
+        self.assertTrue(any("sortiert" in x for x in lg["bereinigung"]))
+        self.assertTrue(any("Doppelzeilen" in x for x in lg["bereinigung"]))
+        self.assertTrue(any("Fehlercode" in k for k in lg["ausschluesse"]))
+        self.assertTrue(any("Datenlücke" in x for x in lg["hinweise"]))
+        self.assertEqual(lg["vollstaendig"], 4)
 
     def test_presence_and_usage_filter(self):
         data = b"timestamp;presence\n2026-11-02 08:00;0\n2026-11-02 08:15;1\n2026-11-02 08:30;1\n2026-11-02 08:45;0\n"
         out = imp.parse_presence(data, "p.csv")
         self.assertEqual(out["intervals"], [["2026-11-02 08:15", "2026-11-02 08:45"]])
-        room = {"occupancy_source": OCC_SOURCES[2], "occupancy_intervals": out["intervals"]}
+        room = {"occupancy_source": OCC_SOURCES[1], "occupancy_intervals": out["intervals"]}
         self.assertTrue(usage_defined(room))
         smp = [{"timestamp": datetime(2026, 11, 2, 8, m)} for m in (0, 15, 30, 45)]
         self.assertEqual([x["timestamp"].minute for x in filter_usage(smp, room)], [15, 30])
@@ -110,3 +127,21 @@ class TestImport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBelegungsplan(unittest.TestCase):
+    def test_blocks_persons_absences(self):
+        from iaq_logic import persons_at, usage_label
+        room = {"occupancy_source": OCC_SOURCES[0], "absences": "2026-11-04; 09.11.2026 bis 10.11.2026",
+                "usage_blocks": [{"days": ["Mo", "Di", "Mi", "Do", "Fr"], "start": "08:00", "end": "12:00", "persons": 4},
+                                 {"days": ["Mo", "Di", "Mi", "Do", "Fr"], "start": "13:00", "end": "17:00", "persons": 2},
+                                 {"days": ["Fr"], "start": "12:00", "end": "13:00", "persons": 0}]}
+        smp = [{"timestamp": datetime(2026, 11, d, h)} for d in (2, 4, 6, 9) for h in (7, 9, 12, 14)]
+        got = [(x["timestamp"].day, x["timestamp"].hour) for x in filter_usage(smp, room)]
+        self.assertEqual(got, [(2, 9), (2, 14), (6, 9), (6, 14)])   # 4.11. und 9.11. abwesend, Fr 12–13 Uhr 0 Personen
+        self.assertEqual(persons_at(datetime(2026, 11, 2, 9), room), 4)
+        self.assertIn("Mo–Fr 08:00–12:00, 4 P.", usage_label(room))
+
+    def test_legacy_schedule(self):
+        room = {"usage_days": ["Mo"], "usage_start": "08:00", "usage_end": "17:00"}
+        self.assertTrue(usage_defined(room))

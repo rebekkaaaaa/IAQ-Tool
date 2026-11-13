@@ -53,8 +53,8 @@ def build_demo_project(n_rooms: int = 3, days: int = 5, interval_min: int = 5) -
             "device_model": "Beispielgerät", "calibration": "Prüfangabe Beispiel", "data_gaps": "keine",
             "occupancy_log": "Beispiel", "selection_reason": "Beispiel: Raumtyp " + name,
             "heating_system": "Heizkörper", "cooling_system": "keine", "window_ventilation": "ja", "recirculation": "nein",
-            "usage_days": [] if spot else ["Mo", "Di", "Mi", "Do", "Fr"], "usage_start": "" if spot else "08:00",
-            "usage_end": "" if spot else "17:00", "outdoor_co2_ppm": None,
+            "usage_blocks": [] if spot else [{"days": ["Mo", "Di", "Mi", "Do", "Fr"], "start": "08:00", "end": "17:00", "persons": persons}],
+            "absences": "", "occupancy_source": "Belegungsplan (manuell)", "occupancy_intervals": [], "outdoor_co2_ppm": None,
             "measurement_interval_min": None if spot else interval_min,
             "start_date": "2026-11-02", "end_date": "2026-11-06", "usage_times": "", "notes": "",
         }

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 import math
+import re
 from typing import Any
 
 CORE = {"CO₂": "ppm", "Temperatur": "°C", "Relative Feuchte": "%"}
@@ -191,9 +192,9 @@ def conditional_hints(room: dict, assessment: dict, parsed: dict | None = None) 
             hints.append("Ausfälle und Datenlücken nicht dokumentiert")
     if documented:
         if not usage_defined(room):
-            hints.append("Nutzungszeit nicht erfasst (Zeitplan, Kalender oder Präsenzsensor): keine nutzungszeitbezogene Auswertung")
-        elif room.get("occupancy_source") not in OCC_SOURCES[1:] and not str(room.get("occupancy_log", "")).strip():
-            hints.append("Nutzung nur als Zeitplan erfasst: Belegungsprotokoll, Kalender oder Präsenzsensor erhöht die Belastbarkeit")
+            hints.append("Nutzungszeit nicht erfasst (Belegungsplan oder Präsenzsensor): keine nutzungszeitbezogene Auswertung")
+        elif room.get("occupancy_source") != OCC_SOURCES[1] and not any(b["persons"] for b in usage_blocks(room)):
+            hints.append("Belegungsplan ohne Personenzahl: Personen je Nutzungsblock angeben (Bezug CO₂-Belastung)")
     if strat == STRATEGIES[2] and assessment.get("period") in PERIODS:
         hints.append("Saisonübergreifende Reihen getrennt nach Betriebsfall prüfen; globales Profil gilt nur für gewählten Betriebsfall")
     if strat != STRATEGIES[0] and len(parsed["samples"]) < 2:
@@ -244,11 +245,12 @@ def _hm(value: Any):
         return None
 
 
-OCC_SOURCES = ["Zeitplan (manuell)", "Kalender (.ics)", "Präsenzsensor (CSV)"]
+OCC_SOURCES = ["Belegungsplan (manuell)", "Präsenzsensor (CSV)"]
+LEGACY_OCC = {"Zeitplan (manuell)": OCC_SOURCES[0], "Kalender (.ics)": OCC_SOURCES[0]}
 
 
 def _intervals(room: dict) -> list:
-    if room.get("occupancy_source") not in OCC_SOURCES[1:]:
+    if room.get("occupancy_source") != OCC_SOURCES[1]:
         return []
     out = []
     for iv in room.get("occupancy_intervals") or []:
@@ -261,31 +263,79 @@ def _intervals(room: dict) -> list:
     return sorted(out)
 
 
+def usage_blocks(room: dict) -> list[dict]:
+    """Gültige Nutzungsblöcke: Wochentage, Von, Bis, Personen (alte Einzelangabe wird übernommen)."""
+    raw = room.get("usage_blocks")
+    if not raw and room.get("usage_days"):
+        raw = [{"days": room.get("usage_days"), "start": room.get("usage_start"), "end": room.get("usage_end"), "persons": room.get("occupancy")}]
+    out = []
+    for blk in raw or []:
+        s, e = _hm(blk.get("start")), _hm(blk.get("end"))
+        days = [d for d in WEEKDAYS if d in (blk.get("days") or [])]
+        if days and s is not None and e is not None and s < e:
+            out.append({"days": days, "start": s, "end": e, "persons": _num(blk.get("persons"))})
+    return out
+
+
+def absence_dates(room: dict) -> set:
+    """Abwesenheiten/Ferien: «2026-12-24 bis 2027-01-02; 2027-04-03» (Datum oder Zeitraum, getrennt mit ; oder Zeilenumbruch)."""
+    out = set()
+    for part in re.split(r"[;\n]", str(room.get("absences") or "")):
+        ds = re.findall(r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}", part)
+        try:
+            dts = [datetime.strptime(d, "%Y-%m-%d" if "-" in d else "%d.%m.%Y").date() for d in ds]
+        except ValueError:
+            continue
+        if len(dts) == 1:
+            out.add(dts[0])
+        elif len(dts) >= 2 and dts[1] >= dts[0]:
+            out.update(dts[0] + timedelta(days=i) for i in range((dts[1] - dts[0]).days + 1))
+    return out
+
+
 def usage_defined(room: dict) -> bool:
-    """Nutzungszeit erfasst: importierte Belegungsintervalle oder Zeitplan (Wochentage + Von/Bis)."""
-    if _intervals(room):
-        return True
-    s, e = _hm(room.get("usage_start")), _hm(room.get("usage_end"))
-    return bool(room.get("usage_days")) and s is not None and e is not None and s < e
+    """Nutzungszeit erfasst: Belegungsplan (mind. ein gültiger Block) oder Präsenzsensor-Intervalle."""
+    return bool(_intervals(room)) or bool(usage_blocks(room))
 
 
 def usage_label(room: dict) -> str:
     iv = _intervals(room)
     if iv:
         h = sum((b - a).total_seconds() for a, b in iv) / 3600
-        src = "Kalender" if room["occupancy_source"] == OCC_SOURCES[1] else "Präsenzsensor"
-        return f"{src}: {len(iv)} Belegungsintervalle, {h:.0f} h"
-    if not usage_defined(room):
+        return f"Präsenzsensor: {len(iv)} Belegungsintervalle, {h:.0f} h"
+    blocks = usage_blocks(room)
+    if not blocks:
         return "nicht strukturiert erfasst"
-    days = [d for d in WEEKDAYS if d in room["usage_days"]]
-    return f"{', '.join(days)} {room['usage_start']}–{room['usage_end']}"
+    def one(b):
+        days = b["days"]
+        d = f"{days[0]}–{days[-1]}" if len(days) > 2 and WEEKDAYS.index(days[-1]) - WEEKDAYS.index(days[0]) == len(days) - 1 else ", ".join(days)
+        p = f", {b['persons']:g} P." if b["persons"] else ""
+        return f"{d} {b['start']:%H:%M}–{b['end']:%H:%M}{p}"
+    n_abs = len(absence_dates(room))
+    return "; ".join(one(b) for b in blocks) + (f" (ohne {n_abs} Abwesenheitstage)" if n_abs else "")
+
+
+def _block_of(ts: datetime, blocks: list):
+    wd, t = WEEKDAYS[ts.weekday()], ts.time()
+    for b in blocks:
+        if wd in b["days"] and b["start"] <= t < b["end"]:
+            return b
+    return None
+
+
+def persons_at(ts: datetime, room: dict):
+    """Personenzahl laut Belegungsplan (None ausserhalb der Nutzung oder ohne Angabe)."""
+    if ts.date() in absence_dates(room):
+        return None
+    b = _block_of(ts, usage_blocks(room))
+    return b["persons"] if b else None
 
 
 def filter_usage(samples: list, room: dict) -> list | None:
     """Messpunkte innerhalb der Nutzungszeit (Beginn inklusive, Ende exklusive).
 
-    Quelle: importierte Belegungsintervalle (Kalender/Präsenzsensor) oder Zeitplan.
-    None, wenn keine Nutzungszeit erfasst ist. Es wird nichts geschätzt.
+    Quelle: Präsenzsensor-Intervalle oder Belegungsplan (abzüglich Abwesenheitstage).
+    Blöcke mit 0 Personen zählen nicht als Nutzung. None, wenn keine Nutzungszeit erfasst ist.
     """
     iv = _intervals(room)
     if iv:
@@ -297,11 +347,11 @@ def filter_usage(samples: list, room: dict) -> list | None:
             if i >= 0 and iv[i][0] <= x["timestamp"] < iv[i][1]:
                 out.append(x)
         return out
-    if not usage_defined(room):
+    blocks = [b for b in usage_blocks(room) if b["persons"] is None or b["persons"] > 0]
+    if not usage_blocks(room):
         return None
-    s, e = _hm(room["usage_start"]), _hm(room["usage_end"])
-    days = set(room["usage_days"])
-    return [x for x in samples if WEEKDAYS[x["timestamp"].weekday()] in days and s <= x["timestamp"].time() < e]
+    absent = absence_dates(room)
+    return [x for x in samples if x["timestamp"].date() not in absent and _block_of(x["timestamp"], blocks)]
 
 
 def percentile(values: list, q: float) -> float:

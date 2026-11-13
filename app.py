@@ -1,4 +1,4 @@
-"""IAQ-Assessment-Tool P6 · V13 · Messart, geräteabhängiger Datenimport, Nutzung aus Kalender/Präsenzsensor, A4-Bericht (2–9 Seiten)."""
+"""IAQ-Assessment-Tool P6 · V14 · Bericht: Zusammenfassung + 3 Seiten Grundlagen + 2 Räume je Seite (max. 50 Räume); Geräteimport, Belegungsplan."""
 import html
 import io
 import json
@@ -15,9 +15,9 @@ from iaq_logic import (
     PROFILE_BT, PROFILE_ECO, PROFILE_SECO, PROFILE_SIA,
     conditional_hints, effective_ventilation, import_measurements,
     long_to_samples, measurement_records, required_issues, screening,
-    WEEKDAYS, OCC_SOURCES, LEGACY_STRATEGIES, usage_label, room_status, evaluate_room, usage_defined, filter_usage, STATUS_OK, STATUS_DEV, STATUS_CHECK, STATUS_NA, STATUS_NAPP, TOPICS,
+    WEEKDAYS, OCC_SOURCES, LEGACY_OCC, LEGACY_STRATEGIES, usage_blocks, usage_label, room_status, evaluate_room, usage_defined, filter_usage, STATUS_OK, STATUS_DEV, STATUS_CHECK, STATUS_NA, STATUS_NAPP, TOPICS,
 )
-from iaq_report import build_report, page_plan
+from iaq_report import build_report, page_plan, building_for, buildings_of, MAX_ROOMS
 import iaq_import as imp
 from demo_data import build_demo_project
 
@@ -31,7 +31,7 @@ EXTERN = "Externes / anderes Gerät (IAQ-Standardformat)"
 
 def new_project():
     return {
-        "schema_version": 13, "demo": False,
+        "schema_version": 14, "buildings_extra": "", "demo": False,
         "building": {"name": "", "object_id": "", "location": "", "owner": "", "altitude_m": "", "operating_hours": "", "notes": ""},
         "report": {"report_no": "", "version": "1.0", "author": ""},
         "assessment": {"basis": PROFILE_BT, "period": PERIODS[0], "purpose": "", "default_strategy": STRATEGIES[1], "notes": ""},
@@ -41,14 +41,14 @@ def new_project():
 
 def new_room(number: int):
     return {
-        "id": str(uuid4())[:8], "name": f"Raum {number}", "use": "Büro",
+        "id": str(uuid4())[:8], "name": f"Raum {number}", "use": "Büro", "building": "",
         "ventilation": VENTS[0], "ventilation_mode": "",
         "active_cooling": False, "strategy": STRATEGIES[1], "purpose": "",
         "start_date": "", "end_date": "", "measurement_interval_min": None,
         "usage_times": "", "usage_days": [], "usage_start": "", "usage_end": "", "occupancy_log": "", "occupancy": None,
         "area_m2": None, "floor": "", "measurement_position": "", "sensor_height_m": "", "sensor_count": "", "position_check": False,
         "device_id": "", "device_model": "", "device_ref": "", "calibration": "", "import_log": [],
-        "occupancy_source": OCC_SOURCES[0], "occupancy_intervals": [], "occupancy_import_log": {},
+        "occupancy_source": OCC_SOURCES[0], "occupancy_intervals": [], "occupancy_import_log": {}, "usage_blocks": [], "absences": "",
         "data_gaps": "", "maintenance": "", "ventilation_notes": "",
         "outdoor_co2_ppm": None, "selection_reason": "", "conditions": "",
         "strategy_deviation": "", "measurements": [], "notes": "",
@@ -63,6 +63,7 @@ def migrate(raw):
         raise ValueError("Keine gültige IAQ-Projektdatei")
     p = new_project()
     p["building"].update({k: v for k, v in raw.get("building", {}).items() if k in p["building"]})
+    p["buildings_extra"] = str(raw.get("buildings_extra") or "")
     a = raw["assessment"]
     p["assessment"]["basis"] = {"SIA 382/1": PROFILE_SIA}.get(a.get("basis"), a.get("basis", PROFILE_BT))
     p["assessment"]["period"] = a.get("period", PERIODS[0])
@@ -83,6 +84,10 @@ def migrate(raw):
         r["strategy"] = LEGACY_STRATEGIES.get(r.get("strategy"), r.get("strategy"))
         if r["strategy"] not in STRATEGIES:
             r["strategy"] = ""
+        r["occupancy_source"] = LEGACY_OCC.get(r.get("occupancy_source"), r.get("occupancy_source"))
+        if not r.get("usage_blocks") and r.get("usage_days"):
+            r["usage_blocks"] = [{"days": r["usage_days"], "start": r.get("usage_start", ""), "end": r.get("usage_end", ""),
+                                  "persons": next((int(x) for x in __import__("re").findall(r"\d+", str(r.get("occupancy") or ""))), None)}]
         if r.get("occupancy_source") not in OCC_SOURCES:
             r["occupancy_source"] = OCC_SOURCES[0]
         if not isinstance(r.get("measurements"), list):
@@ -112,7 +117,7 @@ def display_assessment(room, assessment):
     c2.metric("Zeitpunkte im Datensatz", parsed["zeitpunkte"])
     c3.metric("Unvollständige Zeitpunkte", parsed["zeitpunkte"] - parsed["vollstaendig"])
     st.caption(result["note"])
-    ev = evaluate_room(room, assessment, RULES, st.session_state.project.get("building", {}))
+    ev = evaluate_room(room, assessment, RULES, building_for(st.session_state.project, room))
     show = {STATUS_OK: st.success, STATUS_DEV: st.warning, STATUS_CHECK: st.error, STATUS_NA: st.info}[ev["status"]]
     show(f"**Gesamteinordnung: {ev['status']}** (Bezug: {ev['bezug']})")
     if not required:
@@ -168,7 +173,7 @@ if page == "Übersicht":
     c1.metric("Räume", len(p["rooms"]))
     c2.metric("Vollständige Messpunkte", sum(len(long_to_samples(r)["samples"]) for r in p["rooms"]))
     c3.metric("Räume mit Minimaldatensatz", sum(not required_issues(r, a) for r in p["rooms"]))
-    st.markdown("**Ablauf:** Bewertungsprofil wählen → Räume, Lüftungsart, Messart und Messgerät erfassen → Gerätedatei importieren (wird automatisch vereinheitlicht) → Nutzung aus Zeitplan, Kalender oder Präsenzsensor → Qualitätsprüfung → Bericht.")
+    st.markdown("**Ablauf:** Bewertungsprofil wählen → Räume, Lüftungsart, Messart und Messgerät erfassen → Gerätedatei importieren (wird automatisch vereinheitlicht) → Belegungsplan (wann, wie viele Personen) oder Präsenzsensor → Qualitätsprüfung → Bericht.")
     st.info("**Pflicht:** Raum-ID, Profil, Heiz-/Kühlperiode, Lüftungsart, Messart und je Messpunkt Datum/Uhrzeit, CO₂, Lufttemperatur, relative Feuchte. Weitere Angaben sind je nach Messart bedingt erforderlich.")
     with st.expander("Tool testen ohne Messdaten: synthetisches Beispielprojekt laden"):
         st.caption("Erzeugt Räume mit künstlichen Messreihen (5 Arbeitstage, 5-min-Intervall; letzter Raum als Stichprobe). Ersetzt das aktuelle Projekt.")
@@ -210,6 +215,8 @@ elif page == "1 · Projekt & Bewertung":
         b["operating_hours"] = st.text_input("Übliche Betriebszeiten", b.get("operating_hours", ""))
         b["owner"] = st.text_input("Auftraggeber / Betreiber", b.get("owner", ""))
         b["altitude_m"] = st.text_input("Höhenlage [m ü. M.] (für die Feuchtegrenze nach SIA 180, Ziff. 3.5.1.3)", b.get("altitude_m", ""))
+        p["buildings_extra"] = st.text_area("Weitere untersuchte Gebäude (eine Zeile je Gebäude: Name; Standort; Höhe m ü. M.; Objekt-ID)", p.get("buildings_extra", ""),
+                                            placeholder="Verwaltung Nord; Bahnhofstrasse 5, 4410 Liestal; 330; VN-01")
     rep = p.setdefault("report", {"report_no": "", "version": "1.0", "author": ""})
     with st.expander("Berichtsangaben (erscheinen auf Seite 1 des Berichts)"):
         rep["report_no"] = st.text_input("Bericht-Nr.", rep.get("report_no", ""))
@@ -218,7 +225,10 @@ elif page == "1 · Projekt & Bewertung":
 
 elif page == "2 · Räume & Messart":
     st.subheader("Raum, Messart und Messgerät")
-    if st.button("+ Raum hinzufügen", type="primary"):
+    full = len(p["rooms"]) >= MAX_ROOMS
+    if full:
+        st.warning(f"Maximal {MAX_ROOMS} Räume je Bericht erreicht.")
+    if st.button("+ Raum hinzufügen", type="primary", disabled=full):
         existing = {r.get("name", "") for r in p["rooms"]}
         number = 1
         while f"Raum {number}" in existing:
@@ -234,7 +244,11 @@ elif page == "2 · Räume & Messart":
         r = get_room(selected)
         c1, c2 = st.columns(2)
         with c1:
-            r["name"] = st.text_input("Raum-ID / Name *", r.get("name", ""), key=f"roomname_{selected}")
+            r["name"] = st.text_input("Raumnummer *", r.get("name", ""), key=f"roomname_{selected}", help="Erscheint als Titel des Raumblatts im Bericht, z. B. «2.14».")
+            bnames = [str(x.get("name") or "").strip() for x in buildings_of(p) if str(x.get("name") or "").strip()]
+            if len(bnames) > 1:
+                curb = r.get("building") if r.get("building") in bnames else bnames[0]
+                r["building"] = st.selectbox("Gebäude", bnames, index=bnames.index(curb), key=f"bld_{selected}")
             r["ventilation"] = st.selectbox("Lüftungsart *", VENTS, index=VENTS.index(r["ventilation"]) if r.get("ventilation") in VENTS else 0, key=f"vent_{selected}")
             if r["ventilation"] == VENTS[2]:
                 modes = ["Bitte auswählen", "Mechanisch", "Natürlich"]
@@ -273,14 +287,7 @@ elif page == "2 · Räume & Messart":
                 r["start_date"] = st.text_input("Messbeginn (JJJJ-MM-TT)", r.get("start_date", ""), key=f"begin_{selected}")
                 r["end_date"] = st.text_input("Messende (JJJJ-MM-TT)", r.get("end_date", ""), key=f"end_{selected}")
                 r["measurement_interval_min"] = st.number_input("Sollintervall (Minuten, 0 = nicht angegeben)", min_value=0, max_value=1440, value=int(r.get("measurement_interval_min") or 0), key=f"interval_{selected}") or None
-                st.caption("Nutzungszeit als Zeitplan (alternativ Kalender/Präsenzsensor auf Seite 3)")
-                r["usage_days"] = st.multiselect("Nutzungstage", WEEKDAYS, default=[d for d in r.get("usage_days", []) if d in WEEKDAYS], key=f"udays_{selected}")
-                cu1, cu2 = st.columns(2)
-                r["usage_start"] = cu1.text_input("Von (HH:MM)", r.get("usage_start", ""), key=f"ustart_{selected}", placeholder="08:00")
-                r["usage_end"] = cu2.text_input("Bis (HH:MM)", r.get("usage_end", ""), key=f"uend_{selected}", placeholder="17:00")
-                if (r["usage_days"] or r["usage_start"] or r["usage_end"]) and not usage_defined(r):
-                    st.warning("Nutzungszeit unvollständig/ungültig: Tage wählen und Von < Bis im Format HH:MM.")
-                r["occupancy"] = st.text_input("Belegung / Personenanzahl", r.get("occupancy") or "", key=f"occ_{selected}", placeholder="z. B. 6 Arbeitsplätze, Sitzungen bis 10 Personen")
+                st.caption(f"Nutzung: {usage_label(r)} – erfassen auf Seite 3 (Belegungsplan oder Präsenzsensor)")
                 r["usage_times"] = st.text_input("Bemerkung zur Nutzung (Ausnahmen, Ferien etc.)", r.get("usage_times", ""), key=f"usage_{selected}")
                 r["occupancy_log"] = st.text_input("Nutzungs-/Belegungsprotokoll oder Verweis", r.get("occupancy_log", ""), key=f"occupancy_{selected}")
                 r["data_gaps"] = st.text_input("Datenlücken/Ausfälle (ggf. 'keine')", r.get("data_gaps", ""), key=f"gaps_{selected}")
@@ -392,17 +399,19 @@ elif page == "3 · Messwerte & Nutzung":
                 cur = mp["columns"]["rh"]
                 mp["columns"]["rh"] = cr[0].selectbox("Relative Feuchte", opts, index=opts.index(cur), format_func=fmt_col, key=f"map_rh_{rid}")
                 fm = imp.mapping_formats(table, mp)
+                sd = imp.smart_defaults(table, mp)
                 dt_fmt = d_fmt = None
                 if "dt" in fm:
                     choices = fm["dt"] or list(imp.DT_FORMATS)
-                    dt_fmt = cr[1].selectbox("Datumsformat", choices, key=f"dtf_{rid}",
-                                             help="Mehrere Einträge = Datei ist mehrdeutig (z. B. 03/04/2026). Bitte bewusst wählen.")
+                    dt_fmt = cr[1].selectbox("Datumsformat", choices, index=choices.index(sd["dt_format"]) if sd["dt_format"] in choices else 0, key=f"dtf_{rid}",
+                                             help="Bei mehrdeutigen Daten (03/04/2026) entscheidet das Tool anhand der Zeitreihe (chronologisch, regelmässig).")
                     if not fm["dt"]:
                         cr[1].warning("Zeitformat nicht automatisch erkannt.")
-                    elif len(fm["dt"]) > 1:
-                        cr[1].warning("Datumsformat mehrdeutig – bitte bestätigen.")
+                    elif len(fm["dt"]) > 1 and not sd["dt_format"]:
+                        cr[1].warning("Datumsformat mehrdeutig und aus der Zeitreihe nicht entscheidbar – bitte wählen.")
                 elif "date" in fm:
-                    d_fmt = cr[1].selectbox("Datumsformat", fm["date"] or list(imp.D_FORMATS), key=f"df_{rid}")
+                    dch = fm["date"] or list(imp.D_FORMATS)
+                    d_fmt = cr[1].selectbox("Datumsformat", dch, index=dch.index(sd["date_format"]) if sd["date_format"] in dch else 0, key=f"df_{rid}")
                 tz = cr[2].radio("Zeitbasis der Datei", ["Lokalzeit", "UTC"], index=0 if mp["tz"] == "Lokalzeit" else 1, key=f"tz_{rid}")
                 avg_opts = [None, 1, 5, 10, 15]
                 avg = cr[3].selectbox("Mittelung", avg_opts, format_func=lambda x: "keine (Originalintervall)" if x is None else f"{x}-min-Mittelwerte", key=f"avg_{rid}",
@@ -410,7 +419,7 @@ elif page == "3 · Messwerte & Nutzung":
                 units, unconfirmed = {}, []
                 cu = st.columns(3)
                 for col_, k in zip(cu, imp.PARAMS):
-                    det = mp["units"].get(k)
+                    det = mp["units"].get(k) or sd["units"].get(k)
                     ch = imp.UNIT_CHOICES[k]
                     units[k] = col_.selectbox(f"Einheit {imp.PARAM_NAME[k]} in der Datei", ch, index=ch.index(det) if det in ch else 0, key=f"unit_{k}_{rid}")
                     if det is None:
@@ -418,6 +427,8 @@ elif page == "3 · Messwerte & Nutzung":
                     elif det not in ch:
                         col_.error(f"Einheit «{det}» nicht eindeutig umrechenbar – Gerät auf ppm/°C/% umstellen.")
                 ok_units = True
+                if sd["notes"]:
+                    st.success("**Automatisch bestimmt:** " + " · ".join(sd["notes"]))
                 if unconfirmed:
                     ok_units = st.checkbox("Einheiten geprüft: Datei enthält keine Einheitsangabe für " + ", ".join(unconfirmed) + " – gewählte Einheit gemäss Geräteeinstellung/Datenblatt bestätigt", key=f"uconf_{rid}")
                 if ok_units:
@@ -435,6 +446,10 @@ elif page == "3 · Messwerte & Nutzung":
                         m4.metric("Zeitraum", f"{(lg['von'] or '')[:10]} – {(lg['bis'] or '')[:10]}")
                         if lg["umrechnungen"]:
                             st.caption("Umrechnung: " + "; ".join(lg["umrechnungen"]))
+                        for x in lg.get("bereinigung", []):
+                            st.caption("✓ " + x)
+                        for x in lg.get("hinweise", []):
+                            st.warning(x)
                         if lg["ausschluesse"]:
                             st.dataframe(pd.DataFrame([{"Ausschluss / Bereinigung": k, "Anzahl": v} for k, v in lg["ausschluesse"].items()]), hide_index=True)
                         prev = pd.DataFrame(res["records"][:60]).pivot_table(index="timestamp", columns="parameter", values="value", aggfunc="first").head(8)
@@ -461,18 +476,25 @@ elif page == "3 · Messwerte & Nutzung":
         r["occupancy_source"] = st.radio("Quelle der Nutzungszeit", OCC_SOURCES, index=OCC_SOURCES.index(osrc), horizontal=True, key=f"osrc_{rid}")
         smp = long_to_samples(r)["samples"]
         span = (smp[0]["timestamp"], smp[-1]["timestamp"]) if smp else (None, None)
-        if r["occupancy_source"] == OCC_SOURCES[1]:
-            st.caption("Export des Raumkalenders, z. B. Outlook: Kalender → Freigeben/Speichern als .ics. Gezählt werden gebuchte Termine (Serien inkl. Ausnahmen); ganztägige und abgesagte Termine nicht. "
-                       "Hinweis: Eine Buchung belegt nicht, dass der Raum tatsächlich genutzt wurde.")
-            ics = st.file_uploader("Kalenderdatei (.ics)", type=["ics"], key=f"ics_{rid}")
-            if ics is not None and st.button("Kalender einlesen", key=f"icsgo_{rid}"):
-                try:
-                    out = imp.parse_ics(ics.getvalue(), *span)
-                    r["occupancy_intervals"], r["occupancy_import_log"] = out["intervals"], {"datei": ics.name, **out["log"]}
-                    st.success(f"{out['log']['intervalle']} Belegungsintervalle ({out['log']['stunden']} h) im Messzeitraum übernommen.")
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Kalender nicht lesbar: {exc}")
-        elif r["occupancy_source"] == OCC_SOURCES[2]:
+        if r["occupancy_source"] == OCC_SOURCES[0]:
+            st.caption("Wann ist der Raum mit wie vielen Personen genutzt? Ein Block je typischer Nutzung (z. B. Mo–Fr 08–12 Uhr, 4 Personen). Blöcke mit 0 Personen zählen nicht als Nutzung.")
+            blocks = r.get("usage_blocks") or []
+            n_blk = st.number_input("Anzahl Nutzungsblöcke", min_value=1, max_value=6, value=max(1, min(6, len(blocks) or 1)), key=f"nblk_{rid}")
+            new_blocks = []
+            for i in range(int(n_blk)):
+                old = blocks[i] if i < len(blocks) else {"days": ["Mo", "Di", "Mi", "Do", "Fr"] if i == 0 else [], "start": "", "end": "", "persons": None}
+                b1, b2, b3, b4 = st.columns([3, 1, 1, 1])
+                days = b1.multiselect(f"Tage · Block {i + 1}", WEEKDAYS, default=[d for d in old.get("days", []) if d in WEEKDAYS], key=f"bd_{i}_{rid}")
+                start = b2.text_input("Von", old.get("start", ""), key=f"bs_{i}_{rid}", placeholder="08:00")
+                end = b3.text_input("Bis", old.get("end", ""), key=f"be_{i}_{rid}", placeholder="12:00")
+                pers = b4.number_input("Personen", min_value=0, max_value=500, value=None if old.get("persons") in (None, "") else int(old["persons"]), key=f"bp_{i}_{rid}", help="0 = Raum in diesem Block leer")
+                new_blocks.append({"days": days, "start": start, "end": end, "persons": pers})
+            r["usage_blocks"] = new_blocks
+            if any((x["start"] or x["end"]) for x in new_blocks) and len(usage_blocks(r)) < sum(1 for x in new_blocks if x["start"] or x["end"]):
+                st.warning("Mindestens ein Block ist ungültig: Tage wählen, Zeiten als HH:MM, Von < Bis.")
+            r["absences"] = st.text_input("Abwesenheiten / Ferien / Feiertage (ohne Nutzung)", r.get("absences", ""), key=f"abs_{rid}",
+                                          placeholder="2026-12-24 bis 2027-01-02; 2027-04-03")
+        else:
             st.caption("Datei mit Zeitstempel und Präsenz (0/1, belegt/frei) oder Personenzahl je Zeile, z. B. Trendexport der Gebäudeautomation. Belegt = Wert > 0.")
             pres = st.file_uploader("Präsenzdaten (CSV, XLSX)", type=["csv", "txt", "xlsx"], key=f"pres_{rid}")
             if pres is not None and st.button("Präsenzdaten einlesen", key=f"presgo_{rid}"):
@@ -482,8 +504,6 @@ elif page == "3 · Messwerte & Nutzung":
                     st.success(f"{out['log']['intervalle']} Belegungsintervalle ({out['log']['stunden']} h) übernommen.")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Präsenzdaten nicht lesbar: {exc}")
-        else:
-            st.caption("Zeitplan wird auf Seite 2 erfasst (Wochentage + Von/Bis).")
         used = filter_usage(smp, r)
         st.write(f"**Nutzungszeit:** {usage_label(r)}" + (f" · {len(used)} von {len(smp)} Messpunkten in der Nutzungszeit" if used is not None and smp else ""))
         st.divider()
@@ -549,17 +569,23 @@ elif page == "5 · Nachweis & Reporting":
                     st.markdown(f"**{param} [{unit}]**")
                     st.line_chart(df[[param]])
                 st.caption("Mittelwerte sind nicht zeitgewichtet; für unterschiedliche Messintervalle können die Punktanteile verzerrt sein.")
-        st.download_button("Einzelraumbericht (A4, 2 Seiten) herunterladen", build_report(p, RULES, [r], demo=bool(p.get("demo"))).encode("utf-8"), file_name=f"iaq_raumbericht_{r['id']}.html", mime="text/html")
+        st.download_button("Bericht nur für diesen Raum (A4, 5 Seiten) herunterladen", build_report(p, RULES, [r], demo=bool(p.get("demo"))).encode("utf-8"), file_name=f"iaq_raumbericht_{r['id']}.html", mime="text/html")
         st.divider()
         st.markdown("**Gebäudeübergreifend: Räume getrennt ausweisen**")
         rows = []
         for rm in p["rooms"]:
             result = screening(rm, a, RULES)
-            rows.append({"Raum": rm["name"], "Strategie": rm.get("strategy"), "Vollständige Messpunkte": result["samples"], "Pflichtlücken": len(required_issues(rm, a)), "Einordnung": room_status(rm, a, RULES, p["building"])["status"]})
+            rows.append({"Raum": rm["name"], "Strategie": rm.get("strategy"), "Vollständige Messpunkte": result["samples"], "Pflichtlücken": len(required_issues(rm, a)), "Einordnung": room_status(rm, a, RULES, building_for(p, rm))["status"]})
         st.dataframe(pd.DataFrame(rows), hide_index=True)
         st.warning("Keine pauschale Gebäudekonformität aus Einzelraum-Screenings ableiten. Repräsentative Raumauswahl, Nutzungszeitabdeckung und Vergleichbarkeit sind getrennt nachzuweisen.")
         plan = page_plan(len(p["rooms"]))
-        st.info(f"**Gesamtbericht: {plan['pages']} Seiten** für {len(p['rooms'])} Raum/Räume · Schrift ≥ 12 pt. 1 Raum = 2 Seiten; 2–10 Räume = 4–6 Seiten; bis 66 Räume höchstens 9 Seiten (max. 6 Raumprofile, übrige in der Raummatrix).")
+        if len(p["rooms"]) > MAX_ROOMS:
+            st.warning(f"Projekt enthält {len(p['rooms'])} Räume; der Bericht umfasst die ersten {MAX_ROOMS} (nach Raumnummer).")
+        st.info(f"**Gesamtbericht: {plan['pages']} Seiten** für {len(p['rooms'])} Räume · Seite 1 Zusammenfassung · Seiten 2–4 allgemeine Angaben · danach 2 Räume je Seite (max. {MAX_ROOMS} Räume = {page_plan(MAX_ROOMS)['pages']} Seiten).")
+        with st.expander("Leere Berichtsvorlage mit Platzhaltern"):
+            nt = st.number_input("Anzahl Räume in der Vorlage", min_value=1, max_value=MAX_ROOMS, value=7, key="tpl_n")
+            st.download_button(f"Vorlage für {int(nt)} Räume ({page_plan(int(nt))['pages']} Seiten) herunterladen", build_report(template_rooms=int(nt)).encode("utf-8"),
+                               file_name=f"iaq_bericht_vorlage_{int(nt)}_raeume.html", mime="text/html")
         if st.button("Gesamtbericht erstellen / aktualisieren", type="primary"):
             with st.spinner("Bericht wird erstellt …"):
                 st.session_state["_report"] = {"html": build_report(p, RULES, demo=bool(p.get("demo"))),

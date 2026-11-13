@@ -1,4 +1,4 @@
-# IAQ Assessment Tool · Bachelor-Thesis P6 · V13
+# IAQ Assessment Tool · Bachelor-Thesis P6 · V14
 
 **Grundlage:** P6-Projektauftrag «Entwicklung eines standardisierten IAQ-Nachweismodells für Büro- und Verwaltungsflächen», S. 7–9, sowie die reduzierte Tabelle `P6_Mindestdatensatz_IAQ_reduziert.xlsx`.
 
@@ -15,13 +15,25 @@ Im **Hauptverzeichnis** des bestehenden GitHub-Repositories folgende Dateien hoc
 
 Die Streamlit-Startdatei bleibt `app.py`. Die übrigen Dateien `MESSSTRATEGIEN_P6.md` und `test_iaq_logic.py` sind Dokumentation/Tests und nicht für den Livebetrieb erforderlich.
 
+## Neu in V14 – Berichtsaufbau
+
+| Seite | Inhalt |
+|---|---|
+| 1 | Zusammenfassung: Gebäude und Standort, Anzahl Gebäude und Räume, Zeitraum, Gesamtergebnis, Ergebnis je Fokusthema, effektive Messwerte (Min/Median/P95/Max), Handlungsbedarf |
+| 2–4 | Allgemeine Angaben (fix): Projekt und Gebäude · Bewertungsgrundlagen · Messgeräte, Datenqualität, Quellen, Freigabe |
+| ab 5 | Raumblätter, 2 Räume je Seite: Raumnummer, Einordnung, Kriterien erfüllt/nicht erfüllt, Kennwerte, Auffälligkeiten |
+
+Seiten = 4 + ⌈Räume / 2⌉; höchstens 50 Räume (29 Seiten). Beispiel: 10 Räume = 9 Seiten.
+Mehrere Gebäude: Seite 1 «Weitere untersuchte Gebäude», je Raum Gebäude wählen. Leere Vorlage mit Platzhaltern: Seite 5 der App.
+
 ## Neu in V13
 
 - **Messart statt Nachweiszweck:** ein Dropdown mit den bekannten Begriffen Stichprobenmessung / Messkampagne / Langzeitmessung (Monitoring). Alte Projektdateien werden automatisch umgeschlüsselt.
 - **Gerätematrix integriert** (`devices.json`, 27 Geräte des Messgeräteprojekts): Gerät je Raum wählen; Warnung, wenn das Gerät nicht CO₂, Temperatur und Feuchte misst; Genauigkeit im Raum hinterlegt; Werte ausserhalb des Gerätemessbereichs werden beim Import ausgeschlossen.
 - **Automatischer Datenimport** (`iaq_import.py`): CSV/TXT/XLSX/JSON, Kopfzeile und Vorspann, Trennzeichen, Dezimalkomma, Datums-/Zeitformat, UTC → Lokalzeit, °F/K → °C, Vol.-% → ppm, Mittelung bei Intervallen < 1 min. Unklare Fälle (mehrdeutiges Datum, fehlende Einheit) müssen bestätigt werden. Jeder Import wird protokolliert. Details: `DATENIMPORT.md`.
 - **IAQ-Standardformat** für externe Geräte, mit Vorlage zum Herunterladen.
-- **Nutzung automatisiert:** Zeitplan, Raumkalender (.ics, inkl. Serien) oder Präsenz-/Personenzählsensor (CSV). Die Nutzungszeit steuert die 10 %-Regel.
+- **Automatische Bereinigung:** mehrdeutiges Datum über die Zeitreihe entschieden, fehlende Einheiten über eindeutige Wertebereiche, Sortierung, Doppelzeilen, Fehlercodes; Hinweise zu Lücken, eingefrorenen Werten, Messbereichsende, Zeitumstellung.
+- **Nutzung:** Belegungsplan mit wenigen Angaben (Tage, Von–Bis, Personen, Abwesenheiten) oder Präsenz-/Personenzählsensor (CSV). Die Nutzungszeit steuert die 10 %-Regel.
 
 ## Pflicht für die Grundbewertung
 
@@ -70,7 +82,7 @@ Seite 1 ist immer die standardisierte Übersicht. Bericht im Browser öffnen →
 
 ## Neu in V12
 
-- Bericht: Schrift ≥ 12 pt (ausser Quellen und Seitenfuss), Ergebnis-Banner und Handlungsbedarf-Kasten hervorgehoben; 1 Raum = 2 Seiten, 2–10 Räume = 4–6, bis 66 Räume ≤ 9 Seiten.
+- Bericht (V14): Schrift ≥ 12 pt (ausser Quellen und Seitenfuss); Seite 1 Zusammenfassung, Seiten 2–4 allgemeine Angaben, danach 2 Räume je Seite, max. 50 Räume.
 - Minergie-ECO-Werte im Vorgabenkatalog v2023.1 verifiziert (inkl. Passivmessung).
 - Messpositionierung nach Bacher (2025): Messhöhe, Anzahl Geräte je Fläche, Positionscheck als Hinweise.
 - Kompatibilität: kein veralteter Streamlit-Parameter mehr (`use_container_width` entfernt).

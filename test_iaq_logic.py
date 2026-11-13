@@ -151,11 +151,13 @@ class TestLogic(unittest.TestCase):
     def test_report_page_plan_and_build(self):
         from iaq_report import page_plan, build_report
         from demo_data import build_demo_project
-        self.assertEqual(page_plan(1)['pages'], 2)
-        self.assertTrue(all(page_plan(n)['pages'] <= 9 for n in range(1, 67)))
+        self.assertEqual(page_plan(1)['pages'], 5)
+        self.assertEqual(page_plan(10)['pages'], 9)
+        self.assertEqual(page_plan(50)['pages'], 29)
+        self.assertEqual(page_plan(80)['pages'], 29)   # höchstens 50 Räume
         for n in (1, 3):
             h = build_report(build_demo_project(n), RULES, demo=True)
-            self.assertEqual(h.count("<section class='page'>"), page_plan(n)['pages'])
+            self.assertEqual(h.count("<section class='page"), page_plan(n)['pages'])
             self.assertIn('BEISPIELDATEN', h)
 
 if __name__ == '__main__': unittest.main()

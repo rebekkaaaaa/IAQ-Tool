@@ -11,7 +11,7 @@ Grundsätze
 - Messbereich des Geräts aus der Gerätematrix (devices.json) wird geprüft.
 - Jeder Import erzeugt ein Protokoll (Rückverfolgbarkeit).
 
-Zusätzlich: Nutzungszeiten aus Kalender (.ics) oder Präsenzsensor (CSV).
+Zusätzlich: Belegungsintervalle aus Präsenz-/Personenzählsensor (CSV/XLSX).
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 PARAMS = ("co2", "temp", "rh")
 PARAM_NAME = {"co2": "CO₂", "temp": "Temperatur", "rh": "Relative Feuchte"}
 CANON_UNIT = {"co2": "ppm", "temp": "°C", "rh": "%"}
-UNIT_CHOICES = {"co2": ["ppm", "Vol.-%"], "temp": ["°C", "°F", "K"], "rh": ["%"]}
+UNIT_CHOICES = {"co2": ["ppm", "Vol.-%"], "temp": ["°C", "°F", "K"], "rh": ["%", "Anteil (0–1)"]}
 DEVICE_RANGE_KEY = {"co2": "co2_ppm", "temp": "temperatur_c", "rh": "luftfeuchte_pct"}
 
 # IAQ-Standardformat für externe Geräte (Vorgabe des Tools)
@@ -392,6 +392,8 @@ def _parse_time(v):
     return t.time() if t else None
 
 
+# Typische Fehler-/Platzhalterwerte von Loggern (werden nur ausgeschlossen, wenn sie nicht dem Messbereichsende des Geräts entsprechen)
+SENTINELS = {-9999.0, -999.0, 9999.0, 99999.0, 65535.0, 32767.0, -32768.0}
 NA_TOKENS = {"", "-", "--", "---", "na", "n/a", "nan", "null", "none", "k.a.", "#n/a", "err", "error"}
 
 
@@ -468,6 +470,103 @@ def mapping_formats(table: dict, mapping: dict) -> dict:
     return {}
 
 
+
+# ---------------------------------------------------------------------------
+# Automatische Bereinigung: eindeutige Ableitungen statt Rückfragen
+# ---------------------------------------------------------------------------
+
+# Plausibilitätsfenster für Innenraumluft in Büros, nur zur Unterscheidung der Einheit.
+# Die Fenster überlappen nicht; liegt der Median in keinem oder die Werte streuen über
+# zwei Fenster, wird nicht abgeleitet (Bestätigung nötig).
+UNIT_WINDOWS = {
+    "temp": [("°C", 5, 40), ("°F", 41, 104), ("K", 278, 313)],
+    "co2": [("ppm", 250, 10000), ("Vol.-%", 0.025, 1.0)],
+    "rh": [("%", 1.5, 100), ("Anteil (0–1)", 0.0, 1.0)],
+}
+
+
+def infer_unit(key: str, values: list[float]) -> str | None:
+    vals = [v for v in values if v is not None]
+    if len(vals) < 3:
+        return None
+    lo, hi = min(vals), max(vals)
+    hits = [u for u, a, b in UNIT_WINDOWS[key] if a <= lo and hi <= b]
+    if key == "rh" and len(hits) == 2:   # 0–1 liegt in beiden Fenstern: nur «Anteil», wenn alle ≤ 1
+        hits = ["Anteil (0–1)"] if hi <= 1.0 else ["%"]
+    return hits[0] if len(hits) == 1 else None
+
+
+def resolve_dt_format(values: list[Any], candidates: list[str], tz_mode: str = "Lokalzeit") -> tuple[str | None, str]:
+    """Mehrdeutiges Datumsformat über die Zeitreihe selbst entscheiden.
+
+    Messgeräte schreiben chronologisch und in festem Intervall. Gewählt wird das Format,
+    bei dem die Zeitpunkte in Dateireihenfolge aufsteigen und die Abstände am regelmässigsten
+    sind. Ist kein Format klar besser, bleibt die Entscheidung beim Nutzer.
+    """
+    if len(candidates) <= 1:
+        return (candidates[0] if candidates else None), ""
+    scores = {}
+    for f in candidates:
+        ts = [parse_dt(v, f, tz_mode) for v in values[:2000] if v not in (None, "")]
+        ts = [t for t in ts if t]
+        if len(ts) < 3:
+            continue
+        d = [(b - a).total_seconds() for a, b in zip(ts, ts[1:])]
+        mono = sum(1 for x in d if x >= 0) / len(d)
+        pos = [x for x in d if x > 0]
+        med = statistics.median(pos) if pos else 0
+        reg = sum(1 for x in d if med and abs(x - med) <= 0.1 * med) / len(d)
+        scores[f] = (round(mono, 4), round(reg, 4))
+    if not scores:
+        return None, ""
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    if len(ranked) == 1 or ranked[0][1] > ranked[1][1]:
+        return ranked[0][0], f"Datumsformat automatisch bestimmt: {ranked[0][0]} (chronologische, regelmässige Zeitreihe)"
+    return None, ""
+
+
+def column_values(table: dict, idx: int | None, n: int = 2000) -> list:
+    return [r[idx] for r in table["rows"][:n] if idx is not None and idx < len(r)]
+
+
+def smart_defaults(table: dict, mapping: dict) -> dict:
+    """Leitet Datumsformat und fehlende Einheiten ab, wo dies eindeutig ist."""
+    out = {"dt_format": None, "date_format": None, "units": {}, "notes": [], "open": []}
+    fm = mapping_formats(table, mapping)
+    c = mapping["columns"]
+    if "dt" in fm:
+        f, note = resolve_dt_format(column_values(table, c["timestamp"]), fm["dt"], mapping.get("tz", "Lokalzeit"))
+        out["dt_format"] = f
+        if note:
+            out["notes"].append(note)
+        if f is None:
+            out["open"].append("Datumsformat")
+    elif "date" in fm:
+        cands = fm["date"]
+        if len(cands) > 1:
+            vals = [f"{d} {t}" for d, t in zip(column_values(table, c["date"]), column_values(table, c["time"]))]
+            dmap = {"JJJJ-MM-TT": "JJJJ-MM-TT hh:mm[:ss]", "TT.MM.JJJJ": "TT.MM.JJJJ hh:mm[:ss]", "TT/MM/JJJJ": "TT/MM/JJJJ hh:mm[:ss]", "MM/TT/JJJJ (US)": "MM/TT/JJJJ hh:mm[:ss] (US)"}
+            f, note = resolve_dt_format(vals, [dmap[x] for x in cands], mapping.get("tz", "Lokalzeit"))
+            inv = {v: k for k, v in dmap.items()}
+            out["date_format"] = inv.get(f)
+            if note:
+                out["notes"].append(note)
+            if f is None:
+                out["open"].append("Datumsformat")
+        else:
+            out["date_format"] = cands[0] if cands else None
+    for k in PARAMS:
+        if mapping["units"].get(k):
+            continue
+        u = infer_unit(k, [_num(v) for v in column_values(table, c[k])])
+        if u:
+            out["units"][k] = u
+            out["notes"].append(f"Einheit {PARAM_NAME[k]} aus dem Wertebereich abgeleitet: {u}")
+        else:
+            out["open"].append(f"Einheit {PARAM_NAME[k]}")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Umrechnen und bereinigen
 # ---------------------------------------------------------------------------
@@ -480,6 +579,8 @@ def _convert_unit(key: str, v: float, unit: str) -> float:
         return v - 273.15
     if key == "co2" and unit == "Vol.-%":
         return v * 10000
+    if key == "rh" and unit == "Anteil (0–1)":
+        return v * 100
     return v
 
 
@@ -503,7 +604,7 @@ def convert(table: dict, mapping: dict, *, dt_format: str | None = None, date_fo
     def ex(reason):
         excl[reason] = excl.get(reason, 0) + 1
 
-    pts = []
+    pts, sat, actions, hints = [], {}, [], []
     for r in table["rows"]:
         cell = lambda i: r[i] if i is not None and i < len(r) else None
         if c["timestamp"] is not None:
@@ -523,14 +624,32 @@ def convert(table: dict, mapping: dict, *, dt_format: str | None = None, date_fo
                 if raw not in (None, "") and str(raw).strip().lower() not in NA_TOKENS:
                     ex(f"{PARAM_NAME[k]}: kein Zahlenwert")
                 continue
+            if v in SENTINELS and not (device_range(device, k) and v == device_range(device, k)[1]):
+                ex(f"{PARAM_NAME[k]}: Fehlercode des Geräts ({v:g})")
+                vals[k] = None
+                continue
             v = _convert_unit(k, v, units[k])
             rng = device_range(device, k)
+            if rng and abs(v - rng[1]) < 1e-9:
+                sat[k] = sat.get(k, 0) + 1
             if rng and not (rng[0] - 1e-9 <= v <= rng[1] + 1e-9):
                 ex(f"{PARAM_NAME[k]}: ausserhalb Messbereich des Geräts ({rng[0]:g}–{rng[1]:g} {CANON_UNIT[k]})")
                 v = None
             vals[k] = v
         pts.append((ts, vals))
+    if any(b[0] < a[0] for a, b in zip(pts, pts[1:])):
+        actions.append("Zeilen chronologisch sortiert (Datei nicht in Zeitreihenfolge)")
     pts.sort(key=lambda x: x[0])
+    uniq, seen = [], set()
+    for ts, vals in pts:
+        key = (ts, tuple(vals[k] for k in PARAMS))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append((ts, vals))
+    if len(uniq) < len(pts):
+        actions.append(f"{len(pts) - len(uniq)} identische Doppelzeilen entfernt")
+    pts = uniq
     raw_n = len(pts)
     deltas = [(b[0] - a[0]).total_seconds() for a, b in zip(pts, pts[1:]) if b[0] > a[0]]
     median_s = statistics.median(deltas) if deltas else None
@@ -561,9 +680,31 @@ def convert(table: dict, mapping: dict, *, dt_format: str | None = None, date_fo
                 records.append({"timestamp": stamp, "parameter": PARAM_NAME[k], "value": round(v, 3 if k != "co2" else 1),
                                 "unit": CANON_UNIT[k], "note": f"Mittel aus {len(b[k])} Werten" if len(b[k]) > 1 else ""})
     conv = [f"{PARAM_NAME[k]}: {units[k]} → {CANON_UNIT[k]}" for k in PARAMS if units[k] != CANON_UNIT[k]]
+    # Hinweise (keine Datenänderung)
+    for k, n in sat.items():
+        hints.append(f"{PARAM_NAME[k]}: {n}× Messbereichsende des Geräts erreicht – tatsächlicher Wert evtl. höher (Werte bleiben enthalten)")
+    if median_s:
+        gaps = [(b[0] - a[0]).total_seconds() for a, b in zip(pts, pts[1:]) if (b[0] - a[0]).total_seconds() > 3 * median_s]
+        if gaps:
+            hints.append(f"{len(gaps)} Datenlücke(n) > 3 × Intervall, längste {max(gaps) / 3600:.1f} h – nicht aufgefüllt; unter «Datenlücken» dokumentieren")
+    run_start, frozen = None, 0.0
+    for a, b in zip(pts, pts[1:]):
+        same = all(a[1][k] is not None and a[1][k] == b[1][k] for k in PARAMS)
+        if same:
+            run_start = run_start or a[0]
+            frozen = max(frozen, (b[0] - run_start).total_seconds())
+        else:
+            run_start = None
+    if frozen >= 24 * 3600:
+        hints.append(f"Alle drei Werte bis {frozen / 3600:.0f} h unverändert – Gerät/Logger prüfen (eingefrorene Werte?)")
+    if tz_mode == "Lokalzeit":
+        dst = sum(1 for ts, _ in pts if ts.month == 10 and ts.weekday() == 6 and ts.day > 24 and ts.hour == 2)
+        if dst and any(b[0] == a[0] for a, b in zip(pts, pts[1:])):
+            hints.append("Zeitumstellung (Ende Sommerzeit): doppelte Stunde 02:00–03:00 in Lokalzeit; besser UTC-Export verwenden")
     log = {
         "rohzeilen": len(table["rows"]), "zeitpunkte_gelesen": raw_n, "messpunkte": len(bins), "vollstaendig": complete,
         "ausschluesse": excl, "umrechnungen": conv, "zeitzone": tz_mode,
+        "bereinigung": actions, "hinweise": hints,
         "mittelung_min": average_min, "median_intervall_s": median_s,
         "von": pts[0][0].strftime("%Y-%m-%d %H:%M") if pts else None,
         "bis": pts[-1][0].strftime("%Y-%m-%d %H:%M") if pts else None,
@@ -582,146 +723,23 @@ def auto_import(data: bytes, filename: str, device: dict | None = None, profile:
     ov = overrides or {}
     if ov.get("columns"):
         mapping["columns"].update(ov["columns"])
+    sd = smart_defaults(table, mapping)
+    dt_fmt = ov.get("dt_format") or sd["dt_format"]
+    d_fmt = ov.get("date_format") or sd["date_format"]
     fm = mapping_formats(table, mapping)
-    dt_fmt = ov.get("dt_format") or (fm.get("dt") or [None])[0] if "dt" in fm else None
-    d_fmt = ov.get("date_format") or (fm.get("date") or [None])[0] if "date" in fm else None
-    if "dt" in fm and len(fm["dt"]) > 1 and not ov.get("dt_format"):
-        raise ValueError("Datumsformat mehrdeutig (" + " / ".join(fm["dt"]) + "): bitte wählen.")
-    res = convert(table, mapping, dt_format=dt_fmt, date_format=d_fmt, units=ov.get("units"),
+    if "dt" in fm and not dt_fmt:
+        raise ValueError("Datumsformat nicht eindeutig (" + " / ".join(fm["dt"]) + "): bitte wählen.")
+    units = {**sd["units"], **(ov.get("units") or {})}
+    res = convert(table, mapping, dt_format=dt_fmt, date_format=d_fmt, units=units,
                   tz_mode=ov.get("tz"), device=device, average_min=average_min)
     res["table_meta"] = table["meta"]
+    res["log"]["bereinigung"] = sd["notes"] + res["log"]["bereinigung"]
     return res
 
 
 # ---------------------------------------------------------------------------
-# Nutzung: Kalender (.ics) und Präsenzsensor
+# Nutzung: Präsenz-/Personenzählsensor
 # ---------------------------------------------------------------------------
-
-_DAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
-
-
-def _ics_lines(text: str) -> list[str]:
-    out: list[str] = []
-    for ln in text.splitlines():
-        if ln[:1] in (" ", "\t") and out:
-            out[-1] += ln[1:]
-        else:
-            out.append(ln)
-    return out
-
-
-def _ics_dt(value: str, params: dict) -> tuple[datetime | None, bool]:
-    v = value.strip()
-    if params.get("VALUE") == "DATE" or re.fullmatch(r"\d{8}", v):
-        return datetime.strptime(v[:8], "%Y%m%d"), True
-    try:
-        dt = datetime.strptime(v.rstrip("Z"), "%Y%m%dT%H%M%S")
-    except ValueError:
-        return None, False
-    if v.endswith("Z"):
-        return dt.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).replace(tzinfo=None), False
-    tzid = params.get("TZID")
-    if tzid:
-        try:
-            return dt.replace(tzinfo=ZoneInfo(tzid)).astimezone(LOCAL_TZ).replace(tzinfo=None), False
-        except Exception:  # Windows-Zeitzonennamen (z. B. «W. Europe Standard Time»)
-            if "europe" in tzid.lower() or "romance" in tzid.lower():
-                return dt, False
-            return None, False
-    return dt, False
-
-
-def _duration(s: str) -> timedelta | None:
-    m = re.fullmatch(r"P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", s.strip())
-    if not m:
-        return None
-    w, d, h, mi, se = (int(x or 0) for x in m.groups())
-    return timedelta(weeks=w, days=d, hours=h, minutes=mi, seconds=se)
-
-
-def parse_ics(data: bytes, start: datetime | None = None, end: datetime | None = None) -> dict:
-    """Belegungsintervalle aus einem Raum-/Buchungskalender (.ics, z. B. Outlook-Export).
-
-    Unterstützt Einzeltermine und Serien (RRULE FREQ=DAILY/WEEKLY mit INTERVAL, BYDAY, COUNT, UNTIL; EXDATE).
-    Ganztägige Termine und abgesagte Termine werden nicht als Nutzung gezählt (im Protokoll ausgewiesen).
-    """
-    text = _decode(data)[0]
-    events, cur = [], None
-    for ln in _ics_lines(text):
-        if ln.startswith("BEGIN:VEVENT"):
-            cur = {"EXDATE": []}
-        elif ln.startswith("END:VEVENT") and cur is not None:
-            events.append(cur)
-            cur = None
-        elif cur is not None and ":" in ln:
-            head, value = ln.split(":", 1)
-            name, *ps = head.split(";")
-            params = dict(p.split("=", 1) for p in ps if "=" in p)
-            if name == "EXDATE":
-                cur["EXDATE"] += [(_ics_dt(x, params)[0]) for x in value.split(",")]
-            else:
-                cur[name] = (value, params)
-    end = end or datetime(2100, 1, 1)
-    start = start or datetime(1900, 1, 1)
-    ivals, log = [], {"termine": len(events), "ganztaegig": 0, "abgesagt": 0, "nicht_lesbar": 0, "serien": 0, "nicht_unterstuetzt": 0}
-    for ev in events:
-        if "CANCELLED" in ev.get("STATUS", ("",))[0].upper() or ev.get("TRANSP", ("",))[0].upper() == "TRANSPARENT":
-            log["abgesagt"] += 1
-            continue
-        if "DTSTART" not in ev:
-            log["nicht_lesbar"] += 1
-            continue
-        s, allday = _ics_dt(*ev["DTSTART"])
-        if allday:
-            log["ganztaegig"] += 1
-            continue
-        if s is None:
-            log["nicht_lesbar"] += 1
-            continue
-        if "DTEND" in ev:
-            e_, _ = _ics_dt(*ev["DTEND"])
-            dur = (e_ - s) if e_ else None
-        else:
-            dur = _duration(ev.get("DURATION", ("",))[0])
-        if not dur or dur <= timedelta(0):
-            log["nicht_lesbar"] += 1
-            continue
-        starts = [s]
-        if "RRULE" in ev:
-            rule = dict(p.split("=", 1) for p in ev["RRULE"][0].split(";") if "=" in p)
-            freq = rule.get("FREQ")
-            if freq not in ("DAILY", "WEEKLY"):
-                log["nicht_unterstuetzt"] += 1
-                continue
-            log["serien"] += 1
-            interval = int(rule.get("INTERVAL", 1))
-            count = int(rule["COUNT"]) if "COUNT" in rule else None
-            until = _ics_dt(rule["UNTIL"], {})[0] if "UNTIL" in rule else None
-            bydays = [_DAYS[d[-2:]] for d in rule.get("BYDAY", "").split(",") if d[-2:] in _DAYS] or [s.weekday()]
-            starts, day, n = [], s.date(), 0
-            week0 = s.date() - timedelta(days=s.weekday())
-            while True:
-                cand = datetime.combine(day, s.time())
-                if (until and cand > until) or cand > end or (count is not None and n >= count) or day.year > 2100:
-                    break
-                ok = ((day - s.date()).days % interval == 0) if freq == "DAILY" else (
-                    day.weekday() in bydays and ((day - timedelta(days=day.weekday()) - week0).days // 7) % interval == 0)
-                if ok and cand >= s:
-                    starts.append(cand)
-                    n += 1
-                day += timedelta(days=1)
-        exd = {x for x in ev["EXDATE"] if x}
-        for st_ in starts:
-            if st_ in exd:
-                continue
-            if st_ + dur < start or st_ > end:
-                continue
-            ivals.append((st_, st_ + dur))
-    merged = merge_intervals(ivals)
-    log["intervalle"] = len(merged)
-    log["stunden"] = round(sum((b - a).total_seconds() for a, b in merged) / 3600, 1)
-    return {"intervals": [[a.strftime("%Y-%m-%d %H:%M"), b.strftime("%Y-%m-%d %H:%M")] for a, b in merged], "log": log}
-
 
 def merge_intervals(ivals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
     out: list[list[datetime]] = []
@@ -761,7 +779,7 @@ def parse_presence(data: bytes, filename: str = "", max_gap_min: int | None = No
     if len(fmts) > 1:
         raise ValueError("Datumsformat der Präsenzdaten mehrdeutig (" + " / ".join(fmts) + ").")
     tz = "UTC" if "utc" in _norm(hdr[ti]) else "Lokalzeit"
-    pts = []
+    pts, sat, actions, hints = [], {}, [], []
     for r in table["rows"]:
         if max(ti, pi) >= len(r):
             continue

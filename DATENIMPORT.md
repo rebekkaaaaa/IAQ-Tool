@@ -18,7 +18,27 @@ Nicht umgerechnet wird, was eine Annahme bräuchte (z. B. CO₂ in mg/m³: Druck
 3. Zuordnung kontrollieren. **Bestätigung nötig**, wenn das Datum mehrdeutig ist (03/04/2026) oder die Datei keine Einheit nennt.
 4. Vorschau, Ausschlüsse und Umrechnungen prüfen → «Vereinheitlichte Daten übernehmen». Das Importprotokoll wird im Projekt gespeichert.
 
-**Bereinigung (ohne Schätzung):** Werte ausserhalb des Gerätemessbereichs (Gerätematrix) und ausserhalb des technischen Plausibilitätsbereichs werden ausgeschlossen und gezählt; leere Felder bleiben leer; keine Interpolation. Bei Intervallen < 1 min muss ein Mittelungsintervall gewählt werden (1/5/10/15 min).
+## Automatische Bereinigung (Strategie)
+
+Das Tool entscheidet selbst, wo die Datei eine eindeutige Antwort zulässt, und fragt nur nach, wo sie es nicht tut. Jeder Schritt steht im Importprotokoll.
+
+| Schritt | Regel | Wirkung |
+|---|---|---|
+| Kopfzeile / Vorspann | Zeile mit CO₂-, Temperatur- oder Feuchtespalte wird gesucht | automatisch |
+| Trennzeichen, Dezimalkomma, Zeichensatz | aus der Datei erkannt | automatisch |
+| Mehrdeutiges Datum (03/04/2026) | Format, bei dem die Zeitreihe chronologisch und im festen Intervall läuft (Logger schreiben so) | automatisch; sonst Rückfrage |
+| Fehlende Einheit | Wertebereich eindeutig einem Fenster zugeordnet: °C 5–40, °F 41–104, K 278–313; ppm 250–10 000; r. F. Anteil 0–1 vs. % | automatisch; überlappend → Rückfrage |
+| Reihenfolge | chronologisch sortiert | automatisch |
+| Identische Doppelzeilen | entfernt | automatisch |
+| Fehlercodes (−9999, −999, 9999, 65535 …) | ausgeschlossen, ausser Wert = Messbereichsende des Geräts | automatisch |
+| Messbereich Gerät (Gerätematrix) | Werte ausserhalb ausgeschlossen | automatisch |
+| Messbereichsende erreicht | Werte bleiben, Hinweis (tatsächlicher Wert evtl. höher) | nur Hinweis |
+| Datenlücken > 3 × Intervall | nicht aufgefüllt, Hinweis | nur Hinweis |
+| Alle drei Werte ≥ 24 h unverändert | Hinweis «Logger eingefroren?» | nur Hinweis |
+| Zeitumstellung Oktober | doppelte Stunde in Lokalzeit, Hinweis | nur Hinweis |
+| Intervall < 1 min | Mittelung 1/5/10/15 min wählen | Rückfrage |
+
+Nicht gemacht wird: Interpolation, Glättung, Ausreisserentfernung nach statistischen Schwellen (dafür gibt es keine normative Grundlage; echte Spitzen sind Teil des Nachweises).
 
 ## IAQ-Standardformat (Vorgabe für externe Geräte)
 
@@ -46,7 +66,7 @@ timestamp;co2_ppm;temp_c;rh_pct
 
 ## Geräte der Gerätematrix
 
-Die Gerätematrix nennt nur das Dateiformat (CSV, XLSX, JSON), **nicht den Spaltenaufbau**. Deshalb arbeitet der Import heute mit automatischer Erkennung. Sobald eine Original-Exportdatei vorliegt, wird ein geprüftes Profil in `import_profiles.json` hinterlegt (dann ohne manuelle Kontrolle).
+Die Gerätematrix nennt nur das Dateiformat (CSV, XLSX, JSON), **nicht den Spaltenaufbau**; das Feld «Datenblatt URL» ist leer. Auch die Herstellerhandbücher beschreiben den Aufbau meist nicht, weil der Export über App/Cloud/Software des Herstellers läuft (z. B. testo 162: Daten über die testo Smart Connect Cloud, ohne Angabe zum Exportaufbau). Deshalb arbeitet der Import heute mit automatischer Erkennung. Sobald eine Original-Exportdatei vorliegt, wird ein geprüftes Profil in `import_profiles.json` hinterlegt (dann ohne manuelle Kontrolle).
 
 | Nr. | Gerät | Pflichtgrössen | Datenweg | Profilstatus |
 |---|---|---|---|---|
@@ -82,8 +102,7 @@ Die Gerätematrix nennt nur das Dateiformat (CSV, XLSX, JSON), **nicht den Spalt
 
 | Quelle | Datei | Regel |
 |---|---|---|
-| Zeitplan | – (Seite 2) | Wochentage + Von/Bis |
-| Raumkalender | `.ics` (z. B. Outlook-Export) | gebuchte Termine; Serien DAILY/WEEKLY inkl. Ausnahmen; ganztägige und abgesagte Termine zählen nicht |
+| Belegungsplan (manuell) | – (Seite 3) | bis 6 Blöcke: Wochentage, Von, Bis, Personen; Abwesenheiten/Ferien als Daten oder Zeiträume; Blöcke mit 0 Personen zählen nicht |
 | Präsenz-/Personenzählsensor | CSV/XLSX: Zeitstempel + Präsenz (0/1, belegt/frei) oder Personenzahl | belegt = Wert > 0; gilt bis zum nächsten Zeitpunkt (max. 2 × Medianintervall) |
 
 Die Nutzungszeit bestimmt, welche Messpunkte in die 10 %-Regel eingehen. CO₂ wird bewusst **nicht** zur Belegungserkennung verwendet (sonst würde die Messgrösse ihre eigene Bewertungsbasis bestimmen).
